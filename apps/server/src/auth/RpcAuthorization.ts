@@ -50,6 +50,7 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_WS_METHODS.resumeResearchJob]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.getResearchDatasetWindow]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getSavedResearch]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.publishSavedResearch]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.getTradingValidationReport]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.addTradingWatchlistEntry]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.removeTradingWatchlistEntry]: AuthOrchestrationOperateScope,

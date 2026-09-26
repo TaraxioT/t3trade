@@ -281,6 +281,29 @@ export function publishSavedResearch(input: {
       );
     return {
       scene: published.scene,
+      savedResultSummary:
+        simulation === undefined
+          ? {
+              kind: "event_study" as const,
+              studyId: study.studyId,
+              eventCount: study.report.rows.length,
+              horizons: study.report.summaries.map((summary) => ({
+                horizonMs: summary.horizonMs,
+                measuredCount: summary.measuredCount,
+                eligibleCount: summary.eligibleCount,
+                meanReturnPct: summary.meanReturnPct,
+              })),
+            }
+          : {
+              kind: "long_simulation" as const,
+              simulationId: simulation.simulationId,
+              parentStudyId: study.studyId,
+              eventCount: simulation.report.summary.eventCount,
+              coveredTrades: simulation.report.summary.coveredTrades,
+              totalNetPnlQuote: simulation.report.summary.totalNetPnlQuote,
+              totalFeesQuote: simulation.report.summary.totalFeesQuote,
+              totalSlippageCostQuote: simulation.report.summary.totalSlippageCostQuote,
+            },
       openResearch: {
         kind: "open_research_scene",
         environmentId: input.scope.environmentId,

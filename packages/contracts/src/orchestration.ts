@@ -85,6 +85,8 @@ import {
   GetResearchDatasetWindowResult,
   GetSavedResearchInput,
   GetSavedResearchResult,
+  PublishSavedResearchInput,
+  PublishSavedResearchResult,
 } from "./research.ts";
 // Re-exported so web surfaces can import the scene view type from this
 // package alone, beside the RPC that serves it. The payload types and the
@@ -129,6 +131,7 @@ export const ORCHESTRATION_WS_METHODS = {
   resumeResearchJob: "orchestration.resumeResearchJob",
   getResearchDatasetWindow: "orchestration.getResearchDatasetWindow",
   getSavedResearch: "orchestration.getSavedResearch",
+  publishSavedResearch: "orchestration.publishSavedResearch",
   reviseTradingPlan: "orchestration.reviseTradingPlan",
   activateTradingPlanDocument: "orchestration.activateTradingPlanDocument",
   armTradingWatch: "orchestration.armTradingWatch",
@@ -2589,6 +2592,7 @@ export const OrchestrationRpcSchemas = {
     output: GetResearchDatasetWindowResult,
   },
   getSavedResearch: { input: GetSavedResearchInput, output: GetSavedResearchResult },
+  publishSavedResearch: { input: PublishSavedResearchInput, output: PublishSavedResearchResult },
   reviseTradingPlan: {
     input: OrchestrationReviseTradingPlanInput,
     output: OrchestrationReviseTradingPlanResult,

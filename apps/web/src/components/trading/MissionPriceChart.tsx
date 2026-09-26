@@ -211,6 +211,7 @@ interface MissionPriceChartProps {
    * Static shapes, no animation, accessible text on every marker.
    */
   readonly studyOverlay?: ChartStudyOverlayInput | null;
+  readonly includeStudyPricesInDomain?: boolean;
   /**
    * What a click on one of the validation's paper markers asks about.
    *
@@ -656,6 +657,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     eventBands,
     researchMarkers,
     studyOverlay,
+    includeStudyPricesInDomain,
     onAskAboutMarker,
     draggableKinds,
     onLevelDragEnd,
@@ -866,6 +868,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     ...(eventBands === undefined ? {} : { eventBands }),
     ...(researchMarkers === undefined ? {} : { researchMarkers }),
     ...(studyOverlay === undefined ? {} : { studyOverlay }),
+    ...(includeStudyPricesInDomain === undefined ? {} : { includeStudyPricesInDomain }),
   });
 
   // Too few candles → the parent renders a skeleton / "chart unavailable".

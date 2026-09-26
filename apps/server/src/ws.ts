@@ -95,6 +95,7 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
+import { publishSavedResearch } from "./mcp/toolkits/trading/researchHandlers.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -3136,6 +3137,33 @@ const makeWsRpcLayer = (
                 .pipe(Effect.mapError(researchAccessError));
               yield* checkResearchOwnership(simulation, input.threadId);
               return { kind: "long_simulation" as const, simulation };
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.publishSavedResearch]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.publishSavedResearch,
+            Effect.gen(function* () {
+              if (Option.isNone(researchStudiesOption)) {
+                return yield* Effect.fail(researchServiceError());
+              }
+              const scenes = yield* TradingResearchSceneService;
+              const now = yield* Clock.currentTimeMillis;
+              const result = yield* publishSavedResearch({
+                input: {
+                  action: "publish_saved_research",
+                  ...("studyId" in input
+                    ? { studyId: input.studyId }
+                    : { simulationId: input.simulationId }),
+                },
+                scope: { environmentId: serverEnvironmentId, threadId: input.threadId },
+                now,
+                readStudy: researchStudiesOption.value.readStudy,
+                readSimulation: researchStudiesOption.value.readSimulation,
+                publishScene: scenes.publish,
+                recordMarket: tradingThreadMarket.record,
+              }).pipe(Effect.mapError(researchServiceError));
+              return { openResearch: result.openResearch! };
             }),
             { "rpc.aggregate": "orchestration" },
           ),

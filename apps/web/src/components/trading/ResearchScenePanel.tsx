@@ -26,6 +26,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "../ui/button";
 import { MissionPriceChart } from "./MissionPriceChart";
+import { GraphResearchScene } from "./GraphResearchScene";
 import type { ChartInterval, ChartWindow } from "../../lib/tradingMarketChartState";
 import { useTradingMarketChart } from "../../lib/tradingMarketChartState";
 import {
@@ -1542,7 +1543,9 @@ export function ResearchScenePanel(props: {
       {/* Stage content and inspector share the fixed viewport; the mode is
           the outer graph's tab, never a second switcher here. */}
       <div className="flex min-h-0 flex-1 flex-col" data-testid="research-scene-body">
-        {scene.eventStudy !== undefined ? (
+        {scene.graphResearch !== undefined ? (
+          <GraphResearchScene environmentId={props.environmentId} scene={scene} mode={props.mode} />
+        ) : scene.eventStudy !== undefined ? (
           props.mode === "calendar" ? (
             // Keyed by scene id so a newly published scene (with its own
             // persisted notional and basis) reinitializes the body's local

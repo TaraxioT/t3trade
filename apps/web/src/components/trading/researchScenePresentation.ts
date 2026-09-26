@@ -68,6 +68,9 @@ export function nextGraphViewMode(input: {
   // Scenes just arrived: keep whatever the reader is looking at, Live
   // included. Research decorates the live graph; it does not take it over.
   if (input.hasScenes) return input.current;
+  // A reload starts with an empty scene query. Keep the persisted selection
+  // until that query has actually shown a scene and later loses it.
+  if (!input.previouslyHadScenes) return input.current;
   // Scenes vanished (cleared, or the thread's last scene was superseded away):
   // the research modes have nothing to render, so the graph comes home.
   return "live";
@@ -109,8 +112,10 @@ export function sceneMarketOf(scene: {
   readonly eventStudy?: { readonly market: string } | undefined;
   readonly strategyReplay?: { readonly thesis: { readonly market: string } } | undefined;
   readonly annotation?: { readonly market: string } | undefined;
+  readonly graphResearch?: { readonly source: { readonly chain: string } } | undefined;
 }): string | null {
   return (
+    (scene.graphResearch?.source.chain === "ethereum" ? "ETH" : null) ??
     scene.eventStudy?.market ??
     scene.strategyReplay?.thesis.market ??
     scene.annotation?.market ??
@@ -130,13 +135,15 @@ export function compatibleStudyScenes<
     readonly eventStudy?: { readonly market: string } | undefined;
     readonly strategyReplay?: { readonly thesis: { readonly market: string } } | undefined;
     readonly annotation?: { readonly market: string } | undefined;
+    readonly graphResearch?: { readonly source: { readonly chain: string } } | undefined;
   },
 >(scenes: ReadonlyArray<T> | null | undefined, market: string): ReadonlyArray<T> {
   if (!scenes || scenes.length === 0) return [];
   const upper = market.toUpperCase();
   return scenes.filter(
     (scene) =>
-      scene.eventStudy !== undefined && (sceneMarketOf(scene) ?? "").toUpperCase() === upper,
+      (scene.eventStudy !== undefined || scene.graphResearch !== undefined) &&
+      (sceneMarketOf(scene) ?? "").toUpperCase() === upper,
   );
 }
 

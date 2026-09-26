@@ -258,6 +258,7 @@ import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../times
 import { SkillInlineText } from "./SkillInlineText";
 import { ValidationReportCard } from "../trading/ValidationReportCard";
 import { CardPrefillActions } from "../trading/CardPrefillActions";
+import { deriveResearchToolCard, ResearchTimelineCard } from "../trading/ResearchTimelineCard";
 import {
   armValidationSentence,
   backtestLatestVersionSentence,
@@ -4689,6 +4690,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 }) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry, displayLabel } = props;
+  const timeline = use(TimelineRowCtx);
   // Before any hooks: spawn rows render their own component.
   if (workEntry.agentSpawn) {
     return (
@@ -4696,6 +4698,26 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         workEntry={workEntry}
         active={!isExpandedToolGroupEntry}
         onToggleEntry={props.onToggleEntry}
+      />
+    );
+  }
+  const researchCard =
+    workEntry.itemType === "mcp_tool_call" ? deriveResearchToolCard(workEntry.toolData) : null;
+  if (
+    researchCard !== null &&
+    timeline.threadRef !== null &&
+    (researchCard.kind === "job"
+      ? researchCard.job.environmentId === timeline.threadRef.environmentId &&
+        researchCard.job.threadId === timeline.threadRef.threadId
+      : researchCard.action.environmentId === timeline.threadRef.environmentId &&
+        researchCard.action.threadId === timeline.threadRef.threadId)
+  ) {
+    return (
+      <ResearchTimelineCard
+        card={researchCard}
+        environmentId={timeline.threadRef.environmentId}
+        threadId={timeline.threadRef.threadId}
+        threadKey={timeline.routeThreadKey}
       />
     );
   }

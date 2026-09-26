@@ -69,6 +69,54 @@ it.effect("refuses a saved study from another thread before publishing", () =>
   }),
 );
 
+it.effect("returns a typed net P&L summary with a published saved long", () =>
+  Effect.gen(function* () {
+    const study = {
+      studyId: "study-1",
+      environmentId: scope.environmentId,
+      threadId: scope.threadId,
+      datasetIds: ["dataset-1"],
+      recipe: { source },
+    } as unknown as SavedEventStudy;
+    const simulation = {
+      simulationId: "long-1",
+      parentStudyId: "study-1",
+      environmentId: scope.environmentId,
+      threadId: scope.threadId,
+      datasetIds: ["dataset-1"],
+      report: {
+        summary: {
+          eventCount: 2,
+          coveredTrades: 1,
+          totalNetPnlQuote: 98.51,
+          totalFeesQuote: 1,
+          totalSlippageCostQuote: 0.49,
+        },
+      },
+    } as never;
+    const result = yield* publishSavedResearch({
+      input: { action: "publish_saved_research", simulationId: "long-1" },
+      scope,
+      now: 100,
+      readStudy: () => Effect.succeed(study),
+      readSimulation: () => Effect.succeed(simulation),
+      publishScene: () =>
+        Effect.succeed({ outcome: "published", scene: { sceneId: "scene-1" } } as never),
+      recordMarket: () => Effect.succeed({} as never),
+    });
+    assert.deepEqual(result.savedResultSummary, {
+      kind: "long_simulation",
+      simulationId: "long-1",
+      parentStudyId: "study-1",
+      eventCount: 2,
+      coveredTrades: 1,
+      totalNetPnlQuote: 98.51,
+      totalFeesQuote: 1,
+      totalSlippageCostQuote: 0.49,
+    });
+  }),
+);
+
 it.effect("starts a pinned study with sourced inventory and an exclusive recipe end", () =>
   Effect.gen(function* () {
     let recipe: EventResearchRecipe | undefined;

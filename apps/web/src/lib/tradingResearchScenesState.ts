@@ -20,6 +20,13 @@ function tradingResearchScenesAtom(environmentId: EnvironmentId, threadId: Threa
   return orchestrationEnvironment.tradingResearchScenes({ environmentId, input: { threadId } });
 }
 
+export function refreshTradingResearchScenes(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): void {
+  appAtomRegistry.refresh(tradingResearchScenesAtom(environmentId, threadId));
+}
+
 type TradingResearchScenesAtom = ReturnType<typeof tradingResearchScenesAtom>;
 
 const DISABLED_SCENES_ATOM: TradingResearchScenesAtom = Atom.make(

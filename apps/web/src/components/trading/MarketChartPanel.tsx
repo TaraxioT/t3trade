@@ -163,11 +163,6 @@ export function MarketChartPanel({
   // re-keying it every fifteen seconds.
   const policyNow = useMemo(() => Date.now(), []);
   const resolved = resolveBars(range, bars, policyNow);
-  const chart = useTradingMarketChart(environmentId, asset, resolved.interval, {
-    enabled: true,
-    range,
-    maxBars: rangeMaxBars(range, resolved.interval, policyNow),
-  });
   // Research scenes belong to the conversation: only a chart docked in a
   // thread reads them, and the trade home's chart stays live-first with no
   // research modes at all. Loading follows the dock, not the current view —
@@ -180,24 +175,6 @@ export function MarketChartPanel({
   const [isArming, setIsArming] = useState(false);
   // "Ask the analyst" (Phase 8): one analyst thread per market, reused.
   const analyst = useAskAnalyst(environmentId);
-
-  const data = chart.data;
-
-  // A clock stamped per poll, not per tick: the axis reaches now and the
-  // future gutter exists, which is where an event set's next upcoming
-  // occurrence draws. It moves only when the poll brings new data, so nothing
-  // here repaints continuously.
-  const nowMillis = useMemo(() => Date.now(), [data]);
-
-  // The validation running on this market, handed to the chart whole: the
-  // chart derives its own markers, bands and levels from it (see
-  // `MissionPriceChart`'s `thesis` prop), so this panel wires one thing and
-  // every other chart surface gets the same picture from the same seam.
-  const thesis = data?.thesis ?? null;
-  // Cards ask; they never act. On a thread this writes the question into that
-  // thread's composer, and on the trade home there is no thread, so the badge
-  // and the markers are read-only. @see composerPrefill
-  const prefill = useComposerPrefill(threadRef ?? null);
 
   // The thread's active scenes, filtered to THIS panel's market before
   // anything draws. A scene belongs to the market it was measured on: without
@@ -247,6 +224,15 @@ export function MarketChartPanel({
       marketScenes.find((scene) => scene.sceneId === selectedSceneId) ?? marketScenes[0] ?? null,
     [marketScenes, selectedSceneId],
   );
+  const chart = useTradingMarketChart(environmentId, asset, resolved.interval, {
+    enabled: view === "live",
+    range,
+    maxBars: rangeMaxBars(range, resolved.interval, policyNow),
+  });
+  const data = chart.data;
+  const nowMillis = useMemo(() => Date.now(), [data]);
+  const thesis = data?.thesis ?? null;
+  const prefill = useComposerPrefill(threadRef ?? null);
 
   // The explicit open/focus intent: publication made the scene active, and
   // THIS is the user's ask to see it — refresh first so a scene published
@@ -463,7 +449,11 @@ export function MarketChartPanel({
           className="flex flex-wrap items-center gap-2 px-1 font-mono text-[10.5px] text-muted-foreground"
           data-testid="market-chart-research-recipe"
         >
-          {selectedScene?.eventStudy !== undefined ? (
+          {selectedScene?.graphResearch !== undefined ? (
+            <span>
+              The Graph · Ethereum · WETH/USDC v3 · USDC per ETH · retained historical research
+            </span>
+          ) : selectedScene?.eventStudy !== undefined ? (
             <span>
               {selectedScene.eventStudy.interval} bars · {selectedScene.eventStudy.horizonBars}-bar
               horizon · measured recipe — Range and Bars apply to Live
@@ -479,6 +469,9 @@ export function MarketChartPanel({
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2 px-1">
+          <span className="font-mono text-[10.5px] text-muted-foreground">
+            Hyperliquid · Testnet live
+          </span>
           <div
             className="flex overflow-hidden rounded-md border border-border/60 font-mono text-[10.5px] leading-none"
             role="group"

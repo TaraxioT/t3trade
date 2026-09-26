@@ -189,8 +189,8 @@ function parsePool(
   return { token0, token1 };
 }
 
-function endpointFor(subgraphId: string, apiKey: string): string {
-  return `https://gateway.thegraph.com/api/${encodeURIComponent(apiKey)}/subgraphs/id/${encodeURIComponent(subgraphId)}`;
+function endpointFor(subgraphId: string): string {
+  return `https://gateway.thegraph.com/api/subgraphs/id/${encodeURIComponent(subgraphId)}`;
 }
 
 function isValidWindow(from: number, to: number): boolean {
@@ -199,6 +199,15 @@ function isValidWindow(from: number, to: number): boolean {
 
 function classifyGraphQlErrors(errors: ReadonlyArray<unknown>): GraphDataError {
   const messages = errors.map((error) => string(record(error)?.message)?.toLowerCase() ?? "");
+  if (
+    messages.some(
+      (message) =>
+        message.includes("auth error") ||
+        message.includes("invalid api key") ||
+        message.includes("malformed api key"),
+    )
+  )
+    return fail("authentication", "Graph gateway rejected the configured credential");
   if (
     messages.some(
       (message) => message.includes("indexing_error") || message.includes("indexing error"),
@@ -258,9 +267,9 @@ export function makeGraphHistoricalData(
         return yield* fail("configuration", "Graph API key or subgraph ID is not configured");
       const response = yield* Effect.tryPromise({
         try: () =>
-          fetchGraph(endpointFor(subgraphId, apiKey), {
+          fetchGraph(endpointFor(subgraphId), {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
             body: encodeJson({ query: graphql, variables }),
             signal: AbortSignal.timeout(15_000),
           }),

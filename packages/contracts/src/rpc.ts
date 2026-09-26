@@ -1374,6 +1374,15 @@ export const WsOrchestrationGetSavedResearchRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationPublishSavedResearchRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.publishSavedResearch,
+  {
+    payload: OrchestrationRpcSchemas.publishSavedResearch.input,
+    success: OrchestrationRpcSchemas.publishSavedResearch.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationArmTradingWatchRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.armTradingWatch,
   {
@@ -1745,6 +1754,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationResumeResearchJobRpc,
   WsOrchestrationGetResearchDatasetWindowRpc,
   WsOrchestrationGetSavedResearchRpc,
+  WsOrchestrationPublishSavedResearchRpc,
   WsOrchestrationGetTradingUniverseRpc,
   WsOrchestrationGetTradingAccountViewRpc,
   WsOrchestrationArmTradingWatchRpc,

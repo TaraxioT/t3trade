@@ -7,6 +7,7 @@ import {
   GetResearchJobInput,
   GetSavedResearchInput,
   OpenResearchSceneAction,
+  PublishSavedResearchInput,
 } from "./research.ts";
 
 it("requires a saved result identity when reading retained research", () => {
@@ -66,4 +67,11 @@ it("a chart action retains environment, thread, source and saved result identity
       label: "Open on graph",
     }),
   );
+});
+
+it("accepts a saved result identity for a direct chart publication", () => {
+  const decode = Schema.decodeUnknownSync(PublishSavedResearchInput);
+  assert.throws(() => decode({ threadId: "thread-1" }));
+  const request = decode({ threadId: "thread-1", simulationId: "simulation-1" });
+  assert.strictEqual("simulationId" in request && request.simulationId, "simulation-1");
 });

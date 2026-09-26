@@ -142,6 +142,28 @@ describe("GraphHistoricalData", () => {
     }
   });
 
+  it("classifies a GraphQL authentication error without exposing the credential in the URL", async () => {
+    const secret = "sensitive-key";
+    let requestUrl = "";
+    let authorization = "";
+    const graph = makeGraphHistoricalData({
+      env: { T3_GRAPH_API_KEY: secret },
+      fetch: async (url, init) => {
+        requestUrl = String(url);
+        authorization = new Headers(init?.headers).get("authorization") ?? "";
+        return response({ errors: [{ message: `auth error: malformed API key ${secret}` }] });
+      },
+    });
+    const result = await Effect.runPromise(Effect.result(graph.inspectSource(config)));
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(result.failure.reason).toBe("authentication");
+      expect(JSON.stringify(result.failure)).not.toContain(secret);
+    }
+    expect(requestUrl).not.toContain(secret);
+    expect(authorization).toBe(`Bearer ${secret}`);
+  });
+
   it("distinguishes authentication, rate limit, and a missing aggregate entity", async () => {
     for (const [status, reason] of [
       [401, "authentication"],

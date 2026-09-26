@@ -30,6 +30,12 @@ it("decodes a saved Graph result with its scoped chart action", () => {
     normalizationVersion: 1,
   };
   const result = Schema.decodeUnknownSync(TradingChartResult)({
+    savedResultSummary: {
+      kind: "event_study",
+      studyId: "study-1",
+      eventCount: 2,
+      horizons: [{ horizonMs: 3_600_000, measuredCount: 1, eligibleCount: 2, meanReturnPct: 1 }],
+    },
     openResearch: {
       kind: "open_research_scene",
       environmentId: "env-1",
@@ -45,6 +51,7 @@ it("decodes a saved Graph result with its scoped chart action", () => {
     },
   });
   expect(result.openResearch?.datasetIds).toEqual(["dataset-1"]);
+  expect(result.savedResultSummary?.kind).toBe("event_study");
 });
 
 const NOW = 1_800_000_000_000;

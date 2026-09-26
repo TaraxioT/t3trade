@@ -23,6 +23,7 @@ describe("RPC authorization scopes", () => {
     for (const method of [
       ORCHESTRATION_WS_METHODS.cancelResearchJob,
       ORCHESTRATION_WS_METHODS.resumeResearchJob,
+      ORCHESTRATION_WS_METHODS.publishSavedResearch,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }

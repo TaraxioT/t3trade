@@ -955,6 +955,8 @@ export interface ComputeChartGeometryInput {
    * Placed like the fills, with its own vocabulary; never drawn as a fill.
    */
   readonly studyOverlay?: ChartStudyOverlayInput | null;
+  /** Retained Graph samples may be finer than the context candles; show their exact y positions. */
+  readonly includeStudyPricesInDomain?: boolean;
   /**
    * Price bands to wash across the plot. Generic: the geometry places them and
    * has no opinion on what any of them means. @see ChartZoneInput
@@ -2127,6 +2129,24 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     // an anchor on the same terms as the levels above it.
     ...(pendingOrder === null ? [] : [pendingOrder.price]),
   ]);
+  if (
+    input.includeStudyPricesInDomain &&
+    input.studyOverlay !== undefined &&
+    input.studyOverlay !== null
+  ) {
+    const firstAt = candles[0]!.openTime;
+    const lastAt = candles[candles.length - 1]!.openTime + medianBarInterval(candles);
+    for (const point of [input.studyOverlay.entry, input.studyOverlay.exit]) {
+      if (
+        point !== null &&
+        point.at >= firstAt &&
+        point.at <= lastAt &&
+        Number.isFinite(point.price) &&
+        point.price > 0
+      )
+        anchors.push(point.price);
+    }
+  }
   let rawMin = anchors[0]!;
   let rawMax = anchors[0]!;
   for (const value of anchors) {

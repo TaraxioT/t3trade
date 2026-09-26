@@ -2181,6 +2181,28 @@ describe("computeChartGeometry: the study overlay", () => {
     expect(exit?.y).toBe(0);
   });
 
+  it("can place a retained research sample at its exact price even beyond aggregate candle bounds", () => {
+    const geometry = computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: null,
+      includeStudyPricesInDomain: true,
+      studyOverlay: {
+        activation: null,
+        entry: { at: base + 60_000, price: 100, label: "sample entry" },
+        exit: { at: base + 3 * 60_000, price: 110, label: "sample exit" },
+        returnPct: 10,
+      },
+    });
+    expect(geometry?.studyOverlay?.exit?.priceClipped).toBe(false);
+    expect(geometry?.studyOverlay?.exit?.y).toBeCloseTo(geometry!.yForPrice(110), 8);
+    expect(geometry?.domainMax).toBeGreaterThan(110);
+  });
+
   it("draws no connector when one end of the study is missing", () => {
     const geometry = geometryWith({
       activation: { at: base + 30_000, label: "Shapella" },

@@ -1,5 +1,15 @@
 # Studying events
 
+## Study FOMC announcements on ETH
+
+Ask, for example: “What happened to ETH price after every scheduled FOMC policy announcement during the past five years? Show it on the graph.” T3 Trade resolves meeting statements from Federal Reserve records, checks the Ethereum WETH/USDC v3 Graph source, and saves a report with +1 hour, +24 hour, and +7 day spot returns. The result card shows progress, measured coverage, and **Open on graph**. Meetings with an unknown announcement time or missing price remain visible as uncovered rows.
+
+The graph uses retained Graph candles in USDC per ETH and the exact price samples behind the saved numbers. Select a meeting or horizon to inspect it. Live Hyperliquid testnet prices and position controls remain in the Live view. If the Graph source lacks credentials, coverage, or a compatible deployment, the study reports that failure instead of substituting another price series.
+
+To explore a hypothetical follow-up, ask: “What if I entered a 1,000 USDC long five minutes after each meeting, holding for 24 hours?” The saved scenario records its entry and exit rules, fees, slippage, covered trades, and skips. It uses the same frozen meeting inventory and retained prices when they cover the requested times. These are independent modeled spot trades, with no order placed and no compounded portfolio return. You can change size or costs, compare holding periods, and reopen either saved result from its card without fetching the same historical window again.
+
+The sections below describe the separate, user-recorded event sets and Hyperliquid archive studies.
+
 Some ideas are not about the market at all. They are about the calendar:
 what ETH did after Devcon, what SOL did after Breakpoint, what happens around
 an upgrade. No indicator carries a conference in it, so those ideas used to

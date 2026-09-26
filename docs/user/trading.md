@@ -97,6 +97,8 @@ plan being executed, not a bare order, and it is not labelled as one.
 
 ## Without a trading key
 
+Research, including sourced FOMC studies on ETH, works without a trading signer. Ask for the study in an ordinary thread and use its saved result card to open the Graph chart. The Graph research source is Ethereum WETH/USDC v3, quoted in USDC per ETH; live trading views use Hyperliquid testnet. A Graph gateway credential must be configured on the server for new historical acquisition. Saved complete studies and scenarios can be reopened from retained data when the gateway is unavailable. See [Studying events](studying-events.md) for the event table, horizons, and hypothetical long follow-ups.
+
 Everything above about reading, planning, and publishing works in
 [research mode](research-mode.md), with no signer configured. An entry — direct
 or plan-backed — refuses deterministically with `needs_trading_account` before

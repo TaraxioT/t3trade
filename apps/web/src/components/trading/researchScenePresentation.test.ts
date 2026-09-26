@@ -187,15 +187,18 @@ describe("nextGraphViewMode (thread-scoped mode-switch state)", () => {
     }
   });
 
-  it("returns to Live when the thread holds no scenes: research modes have nothing to show", () => {
+  it("returns to Live when a previously loaded scene disappears", () => {
     for (const current of ["live", "calendar", "aligned"] as const) {
       expect(nextGraphViewMode({ current, hasScenes: false, previouslyHadScenes: true })).toBe(
         "live",
       );
-      expect(nextGraphViewMode({ current, hasScenes: false, previouslyHadScenes: false })).toBe(
-        "live",
-      );
     }
+  });
+
+  it("preserves a restored research view while its scene request is still empty", () => {
+    expect(
+      nextGraphViewMode({ current: "aligned", hasScenes: false, previouslyHadScenes: false }),
+    ).toBe("aligned");
   });
 });
 

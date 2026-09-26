@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import { SavedEventStudy } from "@t3tools/trading-contracts/eventResearch";
 import { SavedEventLongSimulation } from "@t3tools/trading-contracts/eventLongSimulation";
 import { ResearchDatasetWindow, ResearchJobView } from "@t3tools/trading-contracts/researchData";
+import { OpenResearchSceneAction as OpenResearchSceneActionSchema } from "@t3tools/trading-contracts/researchScenes";
 
 import { ThreadId } from "./baseSchemas.ts";
 
@@ -43,6 +44,17 @@ export const GetSavedResearchResult = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("long_simulation"), simulation: SavedEventLongSimulation }),
 ]);
 export type GetSavedResearchResult = typeof GetSavedResearchResult.Type;
+
+export const PublishSavedResearchInput = Schema.Union([
+  Schema.Struct({ threadId: ThreadId, studyId: Schema.String }),
+  Schema.Struct({ threadId: ThreadId, simulationId: Schema.String }),
+]);
+export type PublishSavedResearchInput = typeof PublishSavedResearchInput.Type;
+
+export const PublishSavedResearchResult = Schema.Struct({
+  openResearch: OpenResearchSceneActionSchema,
+});
+export type PublishSavedResearchResult = typeof PublishSavedResearchResult.Type;
 
 /** Navigation intent to one retained result in one authenticated environment. */
 export { OpenResearchSceneAction } from "@t3tools/trading-contracts/researchScenes";

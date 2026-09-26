@@ -92,6 +92,10 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:commands:research:resume-job",
       tag: ORCHESTRATION_WS_METHODS.resumeResearchJob,
     }),
+    publishSavedResearch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:research:publish-saved",
+      tag: ORCHESTRATION_WS_METHODS.publishSavedResearch,
+    }),
     // The venue's listed assets. Held long because the list changes when a
     // market is added or delisted, which is not a per-keystroke event; the
     // server caches under it too.

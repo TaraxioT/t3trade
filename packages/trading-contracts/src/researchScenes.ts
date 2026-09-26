@@ -692,6 +692,34 @@ export const OpenResearchSceneAction = Schema.Struct({
 });
 export type OpenResearchSceneAction = typeof OpenResearchSceneAction.Type;
 
+/** Small numerical answer accompanying a published saved result. */
+export const SavedResearchResultSummary = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("event_study"),
+    studyId: Schema.String,
+    eventCount: Schema.Int,
+    horizons: Schema.Array(
+      Schema.Struct({
+        horizonMs: Schema.Int,
+        measuredCount: Schema.Int,
+        eligibleCount: Schema.Int,
+        meanReturnPct: Schema.NullOr(Schema.Finite),
+      }),
+    ),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("long_simulation"),
+    simulationId: Schema.String,
+    parentStudyId: Schema.String,
+    eventCount: Schema.Int,
+    coveredTrades: Schema.Int,
+    totalNetPnlQuote: Schema.Finite,
+    totalFeesQuote: Schema.Finite,
+    totalSlippageCostQuote: Schema.Finite,
+  }),
+]);
+export type SavedResearchResultSummary = typeof SavedResearchResultSummary.Type;
+
 export const TradingChartResult = Schema.Struct({
   scene: Schema.optional(ResearchSceneView),
   scenes: Schema.optional(Schema.Array(ResearchSceneView)),
@@ -703,6 +731,7 @@ export const TradingChartResult = Schema.Struct({
    */
   open: Schema.optional(OpenSceneAction),
   openResearch: Schema.optional(OpenResearchSceneAction),
+  savedResultSummary: Schema.optional(SavedResearchResultSummary),
   outcome: Schema.optional(Schema.String),
   refused: Schema.optional(Schema.String),
   menu: Schema.optional(Schema.String),

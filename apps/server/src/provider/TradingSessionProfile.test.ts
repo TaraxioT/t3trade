@@ -10,6 +10,7 @@ import {
   resetTradingContractDelivery,
   TRADING_TOOL_NAMES,
   WORKSPACE_TRADING_PREAMBLE,
+  TRADING_TOOL_POLICY,
 } from "./TradingSessionProfile.ts";
 
 // The grounding is delivered as a first-turn contract, so the prompt-content
@@ -109,6 +110,16 @@ it("states the analyst and observe scope as server-enforced fact", () => {
   expect(analystContractText()).toContain("no mission");
   expect(observeContractText()).toContain("server refuses");
   expect(observeContractText()).toContain("no authority");
+});
+
+it("routes sourced FOMC research through retained Graph jobs and saved chart actions", () => {
+  expect(TRADING_TOOL_POLICY).toContain("official Federal Reserve");
+  expect(TRADING_TOOL_POLICY).toContain("Graph");
+  expect(TRADING_TOOL_POLICY).toContain("study_graph");
+  expect(TRADING_TOOL_POLICY).toContain("simulate_long");
+  expect(TRADING_TOOL_POLICY).toContain("publish_saved_research");
+  expect(TRADING_TOOL_POLICY).toContain("saved studyId");
+  expect(TRADING_TOOL_POLICY).not.toContain("product archive is the only market-data source");
 });
 
 it("prefixes the contract onto a trading thread's turn, and leaves other threads alone", () => {
