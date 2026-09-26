@@ -41,6 +41,21 @@ import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
 } from "./orchestration.ts";
 import { TradingChartInterval } from "./trading.ts";
+import { ORCHESTRATION_WS_METHODS, OrchestrationRpcSchemas } from "./orchestration.ts";
+
+it("registers typed retained research reads and lifecycle commands", () => {
+  for (const key of [
+    "getResearchJob",
+    "cancelResearchJob",
+    "resumeResearchJob",
+    "getResearchDatasetWindow",
+    "getSavedResearch",
+  ] as const) {
+    assert.equal(typeof ORCHESTRATION_WS_METHODS[key], "string");
+    assert.isDefined(OrchestrationRpcSchemas[key].input);
+    assert.isDefined(OrchestrationRpcSchemas[key].output);
+  }
+});
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);

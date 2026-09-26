@@ -50,6 +50,14 @@ it("exposes the read, the plan, the watch, the journal, the research, and the tw
   );
 });
 
+it("discovers saved Graph research and publication in the two research tools", () => {
+  const events = TradingToolkit.tools[TRADING_EVENTS_TOOL].description ?? "";
+  const chart = TradingToolkit.tools[TRADING_CHART_TOOL].description ?? "";
+  expect(events).toContain("study_graph");
+  expect(events).toContain("simulate_long");
+  expect(chart).toContain("publish_saved_research");
+});
+
 it("exports provider-compatible object schemas the harness can fill in", () => {
   for (const tool of Object.values(TradingToolkit.tools)) {
     const schema = Tool.getJsonSchema(tool) as {

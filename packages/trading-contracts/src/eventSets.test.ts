@@ -8,6 +8,30 @@
  * see is a sentence, not a silent drop.
  */
 import { describe, expect, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
+import { TradingEventsInput } from "./eventSets.ts";
+
+it("decodes a sourced Graph study and a saved long follow-up separately from legacy study", () => {
+  const decode = Schema.decodeUnknownSync(TradingEventsInput);
+  expect(decode({ action: "study_graph", from: "2021-01-01", to: "2026-01-01" }).action).toBe(
+    "study_graph",
+  );
+  expect(
+    decode({
+      action: "simulate_long",
+      parentStudyId: "study-1",
+      scenario: {
+        notionalQuote: 1_000,
+        entryDelayMs: 300_000,
+        holdMs: 86_400_000,
+        maxEntryWaitMs: 300_000,
+        maxExitWaitMs: 300_000,
+        feeBpsPerSide: 5,
+        slippageBpsPerSide: 5,
+      },
+    }).action,
+  ).toBe("simulate_long");
+});
 
 import {
   checkEventStudy,

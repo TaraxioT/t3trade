@@ -3,6 +3,7 @@ import {
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -307,6 +308,12 @@ import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import { importRecentAgentThreads } from "./project/AgentSessionImporter.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
+import { ResearchAcquisitionService } from "./trading/research/ResearchAcquisitionService.ts";
+import { ResearchDatasetStore } from "./trading/research/ResearchDatasetStore.ts";
+import { ResearchStudyStore } from "./trading/research/ResearchStudyStore.ts";
+import { EventResearchService } from "./trading/research/EventResearchService.ts";
+import { EventLongSimulationService } from "./trading/research/EventLongSimulationService.ts";
+import { canReadResearchResult } from "./trading/research/ResearchAccess.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
@@ -2088,6 +2095,44 @@ const makeWsRpcLayer = (
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
+      const researchAccessError = () =>
+        new OrchestrationGetSnapshotError({
+          message: "Research result was not found in this environment and thread",
+        });
+      const researchServiceError = () =>
+        new OrchestrationGetSnapshotError({ message: "Research request failed" });
+      const serverEnvironmentId = yield* serverEnvironment.getEnvironmentId;
+      const researchAcquisitionOption = yield* Effect.serviceOption(ResearchAcquisitionService);
+      const researchDatasetsOption = yield* Effect.serviceOption(ResearchDatasetStore);
+      const researchStudiesOption = yield* Effect.serviceOption(ResearchStudyStore);
+      const eventResearchOption = yield* Effect.serviceOption(EventResearchService);
+      const eventLongOption = yield* Effect.serviceOption(EventLongSimulationService);
+      const checkResearchOwnership = (
+        value: {
+          readonly environmentId: string;
+          readonly threadId: string;
+          readonly datasetIds?: ReadonlyArray<string>;
+        },
+        threadId: string,
+        datasetId?: string,
+      ) =>
+        canReadResearchResult(value, serverEnvironmentId, threadId, datasetId)
+          ? Effect.void
+          : Effect.fail(researchAccessError());
+      const getResearchJob = (jobId: string) =>
+        Effect.gen(function* () {
+          if (Option.isNone(researchStudiesOption) || Option.isNone(researchAcquisitionOption)) {
+            return yield* Effect.fail(researchServiceError());
+          }
+          return yield* researchStudiesOption.value.getJob(jobId).pipe(
+            Effect.catchIf(
+              (error) => error.reason === "not_found",
+              () => researchAcquisitionOption.value.get(jobId),
+            ),
+            Effect.mapError(researchServiceError),
+          );
+        });
+
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
@@ -2995,6 +3040,137 @@ const makeWsRpcLayer = (
                 showEventSet: (eventSetId) => eventService.show(eventSetId).pipe(Effect.orDie),
               });
               return { scenes: [...decorated] };
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getResearchJob]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getResearchJob,
+            Effect.gen(function* () {
+              const job = yield* getResearchJob(input.jobId);
+              yield* checkResearchOwnership(job, input.threadId);
+              return job;
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.cancelResearchJob]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.cancelResearchJob,
+            Effect.gen(function* () {
+              const job = yield* getResearchJob(input.jobId);
+              yield* checkResearchOwnership(job, input.threadId);
+              if (job.resultKind !== undefined) {
+                if (Option.isNone(researchStudiesOption))
+                  return yield* Effect.fail(researchServiceError());
+                const now = yield* Clock.currentTimeMillis;
+                return yield* researchStudiesOption.value
+                  .cancelJob(input.jobId, now)
+                  .pipe(Effect.mapError(researchServiceError));
+              }
+              if (Option.isNone(researchAcquisitionOption))
+                return yield* Effect.fail(researchServiceError());
+              return yield* researchAcquisitionOption.value
+                .cancel(input.jobId)
+                .pipe(Effect.mapError(researchServiceError));
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.resumeResearchJob]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.resumeResearchJob,
+            Effect.gen(function* () {
+              const job = yield* getResearchJob(input.jobId);
+              yield* checkResearchOwnership(job, input.threadId);
+              if (job.resultKind !== undefined) {
+                if (Option.isNone(researchStudiesOption))
+                  return yield* Effect.fail(researchServiceError());
+                const now = yield* Clock.currentTimeMillis;
+                const queued = yield* researchStudiesOption.value
+                  .resumeJob(input.jobId, now)
+                  .pipe(Effect.mapError(researchServiceError));
+                if (queued.status === "queued") {
+                  if (queued.resultKind === "event_study" && Option.isSome(eventResearchOption)) {
+                    yield* eventResearchOption.value
+                      .run(input.jobId)
+                      .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
+                  } else if (
+                    queued.resultKind === "long_simulation" &&
+                    Option.isSome(eventLongOption)
+                  ) {
+                    yield* eventLongOption.value
+                      .run(input.jobId)
+                      .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
+                  } else {
+                    return yield* Effect.fail(researchServiceError());
+                  }
+                }
+                return queued;
+              }
+              if (Option.isNone(researchAcquisitionOption))
+                return yield* Effect.fail(researchServiceError());
+              return yield* researchAcquisitionOption.value
+                .resume(input.jobId)
+                .pipe(Effect.mapError(researchServiceError));
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getSavedResearch]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getSavedResearch,
+            Effect.gen(function* () {
+              if ((input.studyId === undefined) === (input.simulationId === undefined)) {
+                return yield* Effect.fail(researchAccessError());
+              }
+              if (Option.isNone(researchStudiesOption))
+                return yield* Effect.fail(researchServiceError());
+              const studies = researchStudiesOption.value;
+              if (input.studyId !== undefined) {
+                const study = yield* studies
+                  .readStudy(input.studyId)
+                  .pipe(Effect.mapError(researchAccessError));
+                yield* checkResearchOwnership(study, input.threadId);
+                return { kind: "event_study" as const, study };
+              }
+              const simulation = yield* studies
+                .readSimulation(input.simulationId!)
+                .pipe(Effect.mapError(researchAccessError));
+              yield* checkResearchOwnership(simulation, input.threadId);
+              return { kind: "long_simulation" as const, simulation };
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getResearchDatasetWindow]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getResearchDatasetWindow,
+            Effect.gen(function* () {
+              if (Option.isNone(researchStudiesOption) || Option.isNone(researchDatasetsOption)) {
+                return yield* Effect.fail(researchServiceError());
+              }
+              const studies = researchStudiesOption.value;
+              const saved =
+                "studyId" in input
+                  ? yield* studies
+                      .readStudy(input.studyId)
+                      .pipe(Effect.mapError(researchAccessError))
+                  : yield* studies
+                      .readSimulation(input.simulationId)
+                      .pipe(Effect.mapError(researchAccessError));
+              yield* checkResearchOwnership(saved, input.threadId, input.datasetId);
+              const datasets = researchDatasetsOption.value;
+              return yield* datasets
+                .readWindow({
+                  datasetId: input.datasetId,
+                  from: input.from,
+                  to: input.to,
+                  resolution:
+                    input.resolution === "1h"
+                      ? "hour"
+                      : input.resolution === "1d"
+                        ? "day"
+                        : "swaps",
+                  ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+                })
+                .pipe(Effect.mapError(researchServiceError));
             }),
             { "rpc.aggregate": "orchestration" },
           ),

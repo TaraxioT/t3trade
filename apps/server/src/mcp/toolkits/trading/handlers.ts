@@ -217,6 +217,12 @@ import {
   TradingResearchSceneService,
   composeSceneViews,
 } from "../../../trading/TradingResearchSceneService.ts";
+import { FomcCalendarService } from "../../../trading/research/FomcCalendarService.ts";
+import { GraphHistoricalData } from "../../../trading/research/GraphHistoricalData.ts";
+import { EventResearchService } from "../../../trading/research/EventResearchService.ts";
+import { EventLongSimulationService } from "../../../trading/research/EventLongSimulationService.ts";
+import { ResearchStudyStore } from "../../../trading/research/ResearchStudyStore.ts";
+import { publishSavedResearch, startGraphStudy, startLongSimulation } from "./researchHandlers.ts";
 import {
   ARCHIVE_INTERVALS,
   archiveDatabasePath,
@@ -4056,6 +4062,43 @@ export const handlers = {
       };
 
       switch (input.action) {
+        case "study_graph": {
+          const invocation = yield* McpInvocationContext.McpInvocationContext;
+          const graphOption = yield* Effect.serviceOption(GraphHistoricalData);
+          const calendarOption = yield* Effect.serviceOption(FomcCalendarService);
+          const researchOption = yield* Effect.serviceOption(EventResearchService);
+          if (
+            Option.isNone(graphOption) ||
+            Option.isNone(calendarOption) ||
+            Option.isNone(researchOption)
+          ) {
+            return yield* refuse("Graph research services are unavailable");
+          }
+          return yield* startGraphStudy({
+            input,
+            scope: invocation,
+            now,
+            inspectSource: graphOption.value.inspectSource,
+            resolveCalendar: calendarOption.value.resolve,
+            startStudy: researchOption.value.start,
+          });
+        }
+
+        case "simulate_long": {
+          const invocation = yield* McpInvocationContext.McpInvocationContext;
+          const studiesOption = yield* Effect.serviceOption(ResearchStudyStore);
+          const simulationsOption = yield* Effect.serviceOption(EventLongSimulationService);
+          if (Option.isNone(studiesOption) || Option.isNone(simulationsOption)) {
+            return yield* refuse("Saved research services are unavailable");
+          }
+          return yield* startLongSimulation({
+            input,
+            scope: invocation,
+            readStudy: studiesOption.value.readStudy,
+            startLong: simulationsOption.value.start,
+          });
+        }
+
         case "preview": {
           if (input.occurrences === undefined) {
             return yield* refuse(
@@ -4419,6 +4462,22 @@ export const handlers = {
         }).pipe(Effect.map((views) => views[0] as ResearchSceneView));
 
       switch (input.action) {
+        case "publish_saved_research": {
+          const invocation = yield* McpInvocationContext.McpInvocationContext;
+          const studiesOption = yield* Effect.serviceOption(ResearchStudyStore);
+          if (Option.isNone(studiesOption)) return yield* refuse("Saved research is unavailable");
+          const focus = yield* TradingThreadMarketService;
+          return yield* publishSavedResearch({
+            input,
+            scope: invocation,
+            now,
+            readStudy: studiesOption.value.readStudy,
+            readSimulation: studiesOption.value.readSimulation,
+            publishScene: scenes.publish,
+            recordMarket: focus.record,
+          });
+        }
+
         case "publish_event_study": {
           if (input.eventSetId === undefined) {
             return yield* refuse(

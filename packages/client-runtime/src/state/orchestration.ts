@@ -72,6 +72,26 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:trading-research-scenes",
       tag: ORCHESTRATION_WS_METHODS.getTradingResearchScenes,
     }),
+    researchJob: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:research-job",
+      tag: ORCHESTRATION_WS_METHODS.getResearchJob,
+    }),
+    researchDatasetWindow: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:research-dataset-window",
+      tag: ORCHESTRATION_WS_METHODS.getResearchDatasetWindow,
+    }),
+    savedResearch: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:saved-research",
+      tag: ORCHESTRATION_WS_METHODS.getSavedResearch,
+    }),
+    cancelResearchJob: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:research:cancel-job",
+      tag: ORCHESTRATION_WS_METHODS.cancelResearchJob,
+    }),
+    resumeResearchJob: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:research:resume-job",
+      tag: ORCHESTRATION_WS_METHODS.resumeResearchJob,
+    }),
     // The venue's listed assets. Held long because the list changes when a
     // market is added or delisted, which is not a per-keystroke event; the
     // server caches under it too.

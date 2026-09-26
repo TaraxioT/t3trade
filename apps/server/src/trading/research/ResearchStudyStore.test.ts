@@ -95,6 +95,24 @@ const reset = Effect.gen(function* () {
 });
 
 layer("ResearchStudyStore", (it) => {
+  it.effect("cancellation revokes a running worker and resume requeues the same study", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const store = yield* ResearchStudyStore;
+      yield* store.createJob({ jobId: "job", studyId: "study", recipe, view });
+      yield* store.claimJob("job", "owner", 2, 1_000);
+      const cancelled = yield* store.cancelJob("job", 3);
+      assert.equal(cancelled.status, "cancelled");
+      const late = yield* Effect.result(
+        store.completeStudy({ jobId: "job", ownerToken: "owner", study, now: 4 }),
+      );
+      assert.equal(late._tag, "Failure");
+      const resumed = yield* store.resumeJob("job", 5);
+      assert.equal(resumed.status, "queued");
+      const claimed = yield* store.claimJob("job", "new-owner", 6, 1_000);
+      assert.equal(claimed?.status, "running");
+    }),
+  );
   it.effect("saves a typed study under job ownership and rereads it unchanged", () =>
     Effect.gen(function* () {
       yield* reset;

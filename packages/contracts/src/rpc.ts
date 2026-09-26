@@ -1332,6 +1332,48 @@ export const WsOrchestrationGetTradingResearchScenesRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationGetResearchJobRpc = Rpc.make(ORCHESTRATION_WS_METHODS.getResearchJob, {
+  payload: OrchestrationRpcSchemas.getResearchJob.input,
+  success: OrchestrationRpcSchemas.getResearchJob.output,
+  error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+});
+
+export const WsOrchestrationCancelResearchJobRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.cancelResearchJob,
+  {
+    payload: OrchestrationRpcSchemas.cancelResearchJob.input,
+    success: OrchestrationRpcSchemas.cancelResearchJob.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationResumeResearchJobRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.resumeResearchJob,
+  {
+    payload: OrchestrationRpcSchemas.resumeResearchJob.input,
+    success: OrchestrationRpcSchemas.resumeResearchJob.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationGetResearchDatasetWindowRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getResearchDatasetWindow,
+  {
+    payload: OrchestrationRpcSchemas.getResearchDatasetWindow.input,
+    success: OrchestrationRpcSchemas.getResearchDatasetWindow.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationGetSavedResearchRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getSavedResearch,
+  {
+    payload: OrchestrationRpcSchemas.getSavedResearch.input,
+    success: OrchestrationRpcSchemas.getSavedResearch.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationArmTradingWatchRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.armTradingWatch,
   {
@@ -1698,6 +1740,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTradingMissionSnapshotRpc,
   WsOrchestrationGetTradingMarketChartRpc,
   WsOrchestrationGetTradingResearchScenesRpc,
+  WsOrchestrationGetResearchJobRpc,
+  WsOrchestrationCancelResearchJobRpc,
+  WsOrchestrationResumeResearchJobRpc,
+  WsOrchestrationGetResearchDatasetWindowRpc,
+  WsOrchestrationGetSavedResearchRpc,
   WsOrchestrationGetTradingUniverseRpc,
   WsOrchestrationGetTradingAccountViewRpc,
   WsOrchestrationArmTradingWatchRpc,

@@ -31,6 +31,7 @@ import {
   AnnotationScenePayload,
   composeEventStudyScene,
   EventStudyScenePayload,
+  GraphResearchScenePayload,
   RESEARCH_DISCLAIMER,
   RESEARCH_SCENES_MAX_PER_THREAD,
   ResearchSceneKind,
@@ -46,6 +47,8 @@ import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/
 
 /** What one publish hands the service, already computed by the engines. */
 export interface ResearchSceneWrite {
+  /** Stable for saved results; legacy authored scenes receive a new UUID. */
+  readonly sceneId?: string;
   readonly threadId: string;
   readonly kind: ResearchSceneKind;
   readonly title: string;
@@ -55,7 +58,8 @@ export interface ResearchSceneWrite {
   readonly payload:
     | { readonly kind: "eventStudy"; readonly document: EventStudyScenePayload }
     | { readonly kind: "strategyReplay"; readonly document: StrategyReplayScenePayload }
-    | { readonly kind: "annotation"; readonly document: AnnotationScenePayload };
+    | { readonly kind: "annotation"; readonly document: AnnotationScenePayload }
+    | { readonly kind: "graphResearch"; readonly document: GraphResearchScenePayload };
   readonly now: number;
 }
 
@@ -148,6 +152,7 @@ const encodePayload = Schema.encodeSync(payloadFromJsonString);
 const decodeEventStudy = Schema.decodeUnknownSync(EventStudyScenePayload);
 const decodeStrategyReplay = Schema.decodeUnknownSync(StrategyReplayScenePayload);
 const decodeAnnotation = Schema.decodeUnknownSync(AnnotationScenePayload);
+const decodeGraphResearch = Schema.decodeUnknownSync(GraphResearchScenePayload);
 
 /**
  * Row to view. A payload that no longer decodes (a scene written by an older
@@ -203,6 +208,14 @@ const rowToView = (row: SceneRow): ResearchSceneView | null => {
       return null;
     }
   }
+  if (row.kind === "graph_event_study" || row.kind === "graph_long_simulation") {
+    try {
+      const graphResearch = decodeGraphResearch(parsed);
+      return graphResearch.kind === row.kind ? { ...base, graphResearch } : null;
+    } catch {
+      return null;
+    }
+  }
   return null;
 };
 
@@ -215,7 +228,24 @@ export const makeTradingResearchSceneService = Effect.gen(function* () {
 
   const publish: TradingResearchSceneServiceShape["publish"] = (input) =>
     Effect.gen(function* () {
-      const sceneId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const payloadValid =
+        (input.kind === "event_study" &&
+          input.payload.kind === "eventStudy" &&
+          Schema.is(EventStudyScenePayload)(input.payload.document)) ||
+        (input.kind === "strategy_replay" &&
+          input.payload.kind === "strategyReplay" &&
+          Schema.is(StrategyReplayScenePayload)(input.payload.document)) ||
+        (input.kind === "annotated_market" &&
+          input.payload.kind === "annotation" &&
+          Schema.is(AnnotationScenePayload)(input.payload.document)) ||
+        ((input.kind === "graph_event_study" || input.kind === "graph_long_simulation") &&
+          input.payload.kind === "graphResearch" &&
+          Schema.is(GraphResearchScenePayload)(input.payload.document) &&
+          input.payload.document.kind === input.kind);
+      if (!payloadValid) {
+        return { outcome: "refused", reason: "scene kind and payload do not match" } as const;
+      }
+      const sceneId = input.sceneId ?? (yield* crypto.randomUUIDv4.pipe(Effect.orDie));
       // The serialized document is checked against the payload cap before
       // any write: an oversized or invalid artifact is refused, not stored.
       const document = encodePayload(input.payload.document as unknown);
@@ -230,27 +260,60 @@ export const makeTradingResearchSceneService = Effect.gen(function* () {
       // One transaction around supersession, insert, and history pruning: a
       // publish either lands as the one active scene for its thread and
       // market with the previous one honestly superseded, or nothing changes.
-      yield* sql
+      const writeOutcome = yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            yield* sql`
-              UPDATE trading_research_scenes
-              SET status = 'superseded', updated_at = ${input.now}
-              WHERE thread_id = ${input.threadId}
-                AND market = ${input.market}
-                AND status = 'active'
-            `.pipe(Effect.mapError(sqlFail("publish.supersede")));
-            yield* sql`
-              INSERT INTO trading_research_scenes (
-                scene_id, thread_id, kind, status, title, market, interval,
-                payload, calculation_version, created_at, updated_at
-              ) VALUES (
-                ${sceneId}, ${input.threadId}, ${input.kind}, 'active', ${input.title},
-                ${input.market}, ${input.interval},
-                ${document}, ${input.calculationVersion},
-                ${input.now}, ${input.now}
+            const existing = yield* sql<SceneRow>`
+              SELECT * FROM trading_research_scenes WHERE scene_id = ${sceneId}
+            `.pipe(Effect.mapError(sqlFail("publish.existing")));
+            const prior = existing[0];
+            if (prior !== undefined) {
+              if (
+                prior.thread_id !== input.threadId ||
+                prior.kind !== input.kind ||
+                prior.payload !== document
               )
-            `.pipe(Effect.mapError(sqlFail("publish.insert")));
+                return "conflict" as const;
+              if (prior.status === "active") return "reused" as const;
+            }
+            if (input.kind === "graph_event_study" || input.kind === "graph_long_simulation") {
+              yield* sql`
+                UPDATE trading_research_scenes
+                SET status = 'superseded', updated_at = ${input.now}
+                WHERE thread_id = ${input.threadId}
+                  AND market = ${input.market}
+                  AND kind IN ('graph_event_study', 'graph_long_simulation')
+                  AND status = 'active'
+              `.pipe(Effect.mapError(sqlFail("publish.supersedeGraph")));
+            } else {
+              yield* sql`
+                UPDATE trading_research_scenes
+                SET status = 'superseded', updated_at = ${input.now}
+                WHERE thread_id = ${input.threadId}
+                  AND market = ${input.market}
+                  AND kind NOT IN ('graph_event_study', 'graph_long_simulation')
+                  AND status = 'active'
+              `.pipe(Effect.mapError(sqlFail("publish.supersede")));
+            }
+            if (prior === undefined) {
+              yield* sql`
+                INSERT INTO trading_research_scenes (
+                  scene_id, thread_id, kind, status, title, market, interval,
+                  payload, calculation_version, created_at, updated_at
+                ) VALUES (
+                  ${sceneId}, ${input.threadId}, ${input.kind}, 'active', ${input.title},
+                  ${input.market}, ${input.interval},
+                  ${document}, ${input.calculationVersion},
+                  ${input.now}, ${input.now}
+                )
+              `.pipe(Effect.mapError(sqlFail("publish.insert")));
+            } else {
+              yield* sql`
+                UPDATE trading_research_scenes
+                SET status = 'active', updated_at = ${input.now}
+                WHERE scene_id = ${sceneId}
+              `.pipe(Effect.mapError(sqlFail("publish.reactivate")));
+            }
             // The history cap counts every row; only superseded or cleared
             // rows are ever pruned, oldest first, and never the row just
             // written. Active scenes are untouchable here by construction
@@ -273,9 +336,14 @@ export const makeTradingResearchSceneService = Effect.gen(function* () {
                 )
               `.pipe(Effect.mapError(sqlFail("publish.prune")));
             }
+            return "published" as const;
           }),
         )
         .pipe(Effect.mapError(sqlFail("publish.transaction")));
+
+      if (writeOutcome === "conflict") {
+        return { outcome: "refused", reason: "scene identity already belongs to another result" };
+      }
 
       const scene = yield* show(sceneId);
       return scene === null

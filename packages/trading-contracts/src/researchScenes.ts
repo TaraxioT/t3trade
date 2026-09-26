@@ -59,6 +59,7 @@ import {
   TradingEventTimePrecision,
 } from "./eventSets.ts";
 import { TradingMarket, UnixMillis } from "./primitives.ts";
+import { GraphSourceRef } from "./researchData.ts";
 
 /** The semantic research presentation tool. Publishes; never trades. */
 export const TRADING_CHART_TOOL = "trading_chart";
@@ -285,8 +286,28 @@ export const ResearchSceneKind = Schema.Literals([
   "event_study",
   "strategy_replay",
   "annotated_market",
+  "graph_event_study",
+  "graph_long_simulation",
 ]);
 export type ResearchSceneKind = typeof ResearchSceneKind.Type;
+
+/** Compact pointer: numerical answers remain in the immutable saved result. */
+export const GraphResearchScenePayload = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("graph_event_study"),
+    studyId: Schema.String,
+    source: GraphSourceRef,
+    datasetIds: Schema.Array(Schema.String),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("graph_long_simulation"),
+    simulationId: Schema.String,
+    parentStudyId: Schema.String,
+    source: GraphSourceRef,
+    datasetIds: Schema.Array(Schema.String),
+  }),
+]);
+export type GraphResearchScenePayload = typeof GraphResearchScenePayload.Type;
 
 // ---------------------------------------------------------------------------
 // the wire view the graph renders
@@ -546,6 +567,7 @@ export const ResearchSceneView = Schema.Struct({
   eventStudy: Schema.optional(EventStudyScenePayload),
   strategyReplay: Schema.optional(StrategyReplayScenePayload),
   annotation: Schema.optional(AnnotationScenePayload),
+  graphResearch: Schema.optional(GraphResearchScenePayload),
 });
 export type ResearchSceneView = typeof ResearchSceneView.Type;
 
@@ -563,6 +585,7 @@ export function occurrenceWindowsForStudy(
 export const TradingChartAction = Schema.Literals([
   "publish_event_study",
   "publish_strategy_replay",
+  "publish_saved_research",
   "annotate",
   "show",
   "list",
@@ -576,6 +599,8 @@ export const TradingChartInput = Schema.Struct({
   missionId: Schema.optional(Schema.String),
   action: Schema.optional(TradingChartAction),
   sceneId: Schema.optional(Schema.String),
+  studyId: Schema.optional(Schema.String),
+  simulationId: Schema.optional(Schema.String),
   /** Required by publish_event_study. */
   eventSetId: Schema.optional(Schema.String),
   market: Schema.optional(TradingMarket),
@@ -651,6 +676,22 @@ export const OpenSceneAction = Schema.Struct({
 });
 export type OpenSceneAction = typeof OpenSceneAction.Type;
 
+export const OpenResearchSceneAction = Schema.Struct({
+  kind: Schema.Literal("open_research_scene"),
+  environmentId: Schema.String,
+  threadId: Schema.String,
+  sceneId: Schema.String,
+  market: Schema.Literal("ETH"),
+  source: GraphSourceRef,
+  datasetIds: Schema.Array(Schema.String),
+  resultKind: Schema.Literals(["event_study", "long_simulation"]),
+  studyId: Schema.optional(Schema.String),
+  simulationId: Schema.optional(Schema.String),
+  view: Schema.Literals(["calendar", "event_aligned"]),
+  label: Schema.Literal("Open on graph"),
+});
+export type OpenResearchSceneAction = typeof OpenResearchSceneAction.Type;
+
 export const TradingChartResult = Schema.Struct({
   scene: Schema.optional(ResearchSceneView),
   scenes: Schema.optional(Schema.Array(ResearchSceneView)),
@@ -661,6 +702,7 @@ export const TradingChartResult = Schema.Struct({
    * the honest bridge between the two.
    */
   open: Schema.optional(OpenSceneAction),
+  openResearch: Schema.optional(OpenResearchSceneAction),
   outcome: Schema.optional(Schema.String),
   refused: Schema.optional(Schema.String),
   menu: Schema.optional(Schema.String),
@@ -674,6 +716,7 @@ export type TradingChartResult = typeof TradingChartResult.Type;
  */
 export function renderTradingChartMenu(): string {
   return [
+    "publish_saved_research {studyId | simulationId} saves or reuses the retained Graph result in this thread and returns an openResearch action with environment, source and dataset identity; the chart becomes visible only when that action is applied",
     "publish_event_study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?, direction?, priceField?, excursionThresholdPct?, illustrativeNotionalUsd?, title?} measures the set on the archive " +
       `(horizon default ${EVENT_STUDY_DEFAULT_HORIZON_BARS}, entry basis ${EVENT_STUDY_DEFAULT_ENTRY_BASIS}: ${EVENT_STUDY_ENTRY_BASIS_PHRASES[EVENT_STUDY_DEFAULT_ENTRY_BASIS]}` +
       "; metric path_extrema {direction} publishes the post-entry extremum (a short's lowest low) and its excursion beside the terminal return, hindsight-perfect and labelled; excursionThresholdPct (negative for a short's dip) publishes the hit count over complete horizons with its matched every-bar baseline) " +

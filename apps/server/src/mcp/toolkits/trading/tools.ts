@@ -71,6 +71,11 @@ import { TradingThesisValidationService } from "../../../trading/TradingThesisVa
 import { TradingHypothesisService } from "../../../trading/TradingHypothesisService.ts";
 import { TradingEventService } from "../../../trading/TradingEventService.ts";
 import { TradingResearchSceneService } from "../../../trading/TradingResearchSceneService.ts";
+import { FomcCalendarService } from "../../../trading/research/FomcCalendarService.ts";
+import { GraphHistoricalData } from "../../../trading/research/GraphHistoricalData.ts";
+import { EventResearchService } from "../../../trading/research/EventResearchService.ts";
+import { EventLongSimulationService } from "../../../trading/research/EventLongSimulationService.ts";
+import { ResearchStudyStore } from "../../../trading/research/ResearchStudyStore.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -142,6 +147,11 @@ const dependencies = [
   TradingEventService,
   // `trading_chart` publishes scenes through the research scene service.
   TradingResearchSceneService,
+  FomcCalendarService,
+  GraphHistoricalData,
+  EventResearchService,
+  EventLongSimulationService,
+  ResearchStudyStore,
   SqlClient.SqlClient,
   // The workspace TRADE.md lifecycle: `trading_enter`'s read-only drift guard
   // and an accepted publish's attribution refresh. Reads a file and rows;
@@ -316,7 +326,7 @@ export const TradingHypothesisTool = Tool.make("trading_hypothesis", {
 
 export const TradingEventsTool = Tool.make("trading_events", {
   description:
-    'The external calendar a thesis anchors on. record {name, occurrences:[{start, end?, label?, source}]} stores dates you researched in this chat, each with one source URL, never several joined or invented; fetches nothing. An instantaneous event uses the same instant for start and end; a date-only source keeps date precision — never invent a midnight or a 24h span. add, list, show, retire. study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?, direction?} reads the archive: interval 1m|3m|5m|15m|1h|4h|1d, horizonBars 1..500 (default 30); a four-week daily study is {interval: "1d", horizonBars: 28}. Pick the coarsest interval that covers the horizon: finer intervals start later in the archive. Reports per-occurrence forward returns vs an every-bar baseline, and how many the archive can see; metric path_extrema {direction short|long} adds the post-entry extremum (a short: its lowest low) and its excursion, hindsight-perfect, never a realizable result; no fees, no sizing. To show a study on the graph, call trading_chart publish_event_study with the same parameters. Menu: trading_events({})',
+    'study_graph {from,to,category?,horizonsMs?} verifies the Ethereum WETH/USDC v3 Graph source, resolves official FOMC statements and starts a retained event-study job; result carries researchJob.jobId, then studyId on completion. Default horizons: +1h/+24h/+7d. Missing credentials, unsupported schema or coverage are explicit failures. simulate_long {parentStudyId,scenario:{notionalQuote,entryDelayMs,holdMs,maxEntryWaitMs,maxExitWaitMs,feeBpsPerSide,slippageBpsPerSide}} starts a saved hypothetical long ledger from that study. Use trading_chart publish_saved_research with the saved ID for a chart action. Legacy event sets: record {name,occurrences:[{start,end?,label?,source}]} stores sourced dates; add,list,show,retire. study {eventSetId,market,interval?,horizonBars?,entryBasis?,metric?,direction?} reads Hyperliquid archive: interval 1m|3m|5m|15m|1h|4h|1d, horizonBars 1..500 (default 30); four-week daily: {interval: "1d", horizonBars: 28}. Pick coarsest interval; finer intervals start later. path_extrema is hindsight-perfect. Menu: trading_events({})',
   parameters: TradingEventsInput,
   success: TradingEventsResult,
   failure: TradingToolRejectedError,
@@ -335,7 +345,7 @@ export const TradingEventsTool = Tool.make("trading_events", {
 
 export const TradingChartTool = Tool.make("trading_chart", {
   description:
-    "Research on this chat's graph. publish_event_study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?, direction?, priceField?, illustrativeNotionalUsd?} measures the archive and publishes entries, exits, returns, coverage, sources; metric path_extrema {direction short|long} also publishes the post-entry extremum (a short: lowest low) with its hindsight-perfect excursion; publish shows the scene, no show call. publish_strategy_replay {thesis | hypothesisId} pins a backtest's trades and verdict. annotate {market, at, text} pins an authored note. show {sceneId}, list, clear. Research only: no orders, no validation; scenes say so. Menu: trading_chart({})",
+    "publish_saved_research {studyId | simulationId} saves a Graph research scene in this authenticated thread and returns openResearch: a typed Open on graph action with the exact environment, source, dataset and result identity. Publishing alone does not move the user's chart; show the action. Repeating publication reuses the scene and retained prices. Legacy: publish_event_study {eventSetId,market,interval?,horizonBars?,entryBasis?,metric?,direction?,priceField?,illustrativeNotionalUsd?} pins archive returns; path_extrema is hindsight-perfect. publish_strategy_replay {thesis | hypothesisId} pins a backtest. annotate {market,at,text} adds an authored note. show {sceneId}, list, clear. No orders or validation. Menu: trading_chart({})",
   parameters: TradingChartInput,
   success: TradingChartResult,
   failure: TradingToolRejectedError,

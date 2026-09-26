@@ -34,6 +34,18 @@ const annotation = (market: string, at: number) => ({
   document: { market, at, text: "the note" },
 });
 
+const graphSource = {
+  provider: "the_graph" as const,
+  chain: "ethereum" as const,
+  subgraphId: "subgraph",
+  deployment: "deployment",
+  poolAddress: "pool",
+  baseTokenAddress: "weth",
+  quoteTokenAddress: "usdc",
+  feeTier: "3000",
+  normalizationVersion: 1 as const,
+};
+
 const layer = it.layer(
   TradingResearchSceneServiceLive.pipe(
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
@@ -65,6 +77,90 @@ const publish = Effect.fn("publish")(function* (threadId: string, index: number,
 });
 
 layer("TradingResearchSceneService", (it) => {
+  it.effect("a failed Graph publish leaves the previous active scene intact", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingResearchSceneService;
+      const first = yield* service.publish({
+        sceneId: "first-graph-scene",
+        threadId: "thread-1",
+        kind: "graph_event_study",
+        title: "first pointer",
+        market: "ETH",
+        interval: null,
+        calculationVersion: "graph-event-study-1",
+        payload: {
+          kind: "graphResearch",
+          document: {
+            kind: "graph_event_study",
+            studyId: "study-1",
+            source: graphSource,
+            datasetIds: [],
+          },
+        },
+        now: START,
+      });
+      assert.equal(first.outcome, "ok");
+      if (first.outcome !== "ok") return;
+      const failed = yield* service.publish({
+        sceneId: "bad-graph-scene",
+        threadId: "thread-1",
+        kind: "graph_event_study",
+        title: "bad pointer",
+        market: "ETH",
+        interval: null,
+        calculationVersion: "graph-event-study-1",
+        payload: {
+          kind: "graphResearch",
+          document: {
+            kind: "graph_long_simulation",
+            simulationId: "wrong-kind",
+            parentStudyId: "study",
+            source: graphSource,
+            datasetIds: [],
+          },
+        },
+        now: START + 1,
+      });
+      assert.equal(failed.outcome, "refused");
+      assert.equal((yield* service.show(first.scene.sceneId))?.status, "active");
+    }),
+  );
+  it.effect("publishes a saved Graph pointer once without superseding the live scene", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingResearchSceneService;
+      const live = yield* publish("thread-1", 0);
+      const input = {
+        sceneId: "graph-scene-1",
+        threadId: "thread-1",
+        kind: "graph_event_study" as const,
+        title: "FOMC ETH study",
+        market: "ETH",
+        interval: null,
+        calculationVersion: "graph-event-study-1",
+        payload: {
+          kind: "graphResearch" as const,
+          document: {
+            kind: "graph_event_study" as const,
+            studyId: "study-1",
+            source: graphSource,
+            datasetIds: ["dataset-1"],
+          },
+        },
+        now: START + 1,
+      };
+      const first = yield* service.publish(input);
+      const second = yield* service.publish({ ...input, now: START + 2 });
+      assert.equal(first.outcome, "ok");
+      assert.equal(second.outcome, "ok");
+      if (first.outcome !== "ok" || second.outcome !== "ok") return;
+      assert.equal(first.scene.sceneId, second.scene.sceneId);
+      assert.equal(first.scene.graphResearch?.kind, "graph_event_study");
+      assert.equal((yield* service.show(live.sceneId))?.status, "active");
+      assert.equal((yield* service.list("thread-1")).length, 2);
+    }),
+  );
   it.effect("round-trips a scene with the disclaimer and the calculation version", () =>
     Effect.gen(function* () {
       yield* migrated;

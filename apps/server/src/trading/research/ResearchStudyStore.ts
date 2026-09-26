@@ -42,6 +42,8 @@ export interface ResearchStudyStoreShape {
     readonly view: ResearchJobView;
   }) => Effect.Effect<ResearchJobView, ResearchError>;
   readonly getJob: (jobId: string) => Effect.Effect<ResearchJobView, ResearchError>;
+  readonly cancelJob: (jobId: string, now: number) => Effect.Effect<ResearchJobView, ResearchError>;
+  readonly resumeJob: (jobId: string, now: number) => Effect.Effect<ResearchJobView, ResearchError>;
   readonly getRecipe: (jobId: string) => Effect.Effect<EventResearchRecipe, ResearchError>;
   readonly listRunnable: (
     now: number,
@@ -198,6 +200,50 @@ export const makeResearchStudyStore = Effect.gen(function* () {
       if (!row) return yield* error("not_found", "Research study job was not found");
       return yield* Effect.try({ try: () => decodeView(row.view_json), catch: storageError });
     });
+  const cancelJob: ResearchStudyStoreShape["cancelJob"] = (jobId, now) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const row = (yield* findJob(jobId))[0];
+          if (!row) return yield* error("not_found", "Research result job was not found");
+          const current = decodeView(row.view_json);
+          if (row.status === "complete" || row.status === "cancelled") return current;
+          const cancelled = { ...current, status: "cancelled" as const, updatedAt: now };
+          yield* sql`
+        UPDATE graph_research_result_jobs
+        SET status = 'cancelled', view_json = ${encodeView(cancelled)}, owner_token = NULL,
+          lease_until = NULL, updated_at = ${now}
+        WHERE job_id = ${jobId} AND status != 'complete'
+      `;
+          return cancelled;
+        }),
+      )
+      .pipe(Effect.mapError((cause) => (Schema.is(ResearchError)(cause) ? cause : storageError())));
+  const resumeJob: ResearchStudyStoreShape["resumeJob"] = (jobId, now) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const row = (yield* findJob(jobId))[0];
+          if (!row) return yield* error("not_found", "Research result job was not found");
+          const current = decodeView(row.view_json);
+          if (row.status === "complete" || row.status === "queued" || row.status === "running")
+            return current;
+          const queued = {
+            ...current,
+            status: "queued" as const,
+            updatedAt: now,
+            failureReason: undefined,
+          };
+          yield* sql`
+        UPDATE graph_research_result_jobs
+        SET status = 'queued', view_json = ${encodeView(queued)}, owner_token = NULL,
+          lease_until = NULL, updated_at = ${now}
+        WHERE job_id = ${jobId} AND status IN ('cancelled', 'paused', 'failed')
+      `;
+          return queued;
+        }),
+      )
+      .pipe(Effect.mapError((cause) => (Schema.is(ResearchError)(cause) ? cause : storageError())));
   const createJob: ResearchStudyStoreShape["createJob"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -694,6 +740,8 @@ export const makeResearchStudyStore = Effect.gen(function* () {
   return {
     createJob,
     getJob,
+    cancelJob,
+    resumeJob,
     getRecipe,
     listRunnable,
     claimJob,

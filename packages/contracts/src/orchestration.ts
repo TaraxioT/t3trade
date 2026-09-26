@@ -78,6 +78,14 @@ import {
   TradingWatchlistView,
 } from "./trading.ts";
 import { ResearchSceneView } from "@t3tools/trading-contracts/researchScenes";
+import {
+  GetResearchJobInput,
+  GetResearchJobResult,
+  GetResearchDatasetWindowInput,
+  GetResearchDatasetWindowResult,
+  GetSavedResearchInput,
+  GetSavedResearchResult,
+} from "./research.ts";
 // Re-exported so web surfaces can import the scene view type from this
 // package alone, beside the RPC that serves it. The payload types and the
 // fixed display sentences travel the same boundary: the graph renders the
@@ -116,6 +124,11 @@ export const ORCHESTRATION_WS_METHODS = {
   getTradingAccountView: "orchestration.getTradingAccountView",
   getTradingMarketChart: "orchestration.getTradingMarketChart",
   getTradingResearchScenes: "orchestration.getTradingResearchScenes",
+  getResearchJob: "orchestration.getResearchJob",
+  cancelResearchJob: "orchestration.cancelResearchJob",
+  resumeResearchJob: "orchestration.resumeResearchJob",
+  getResearchDatasetWindow: "orchestration.getResearchDatasetWindow",
+  getSavedResearch: "orchestration.getSavedResearch",
   reviseTradingPlan: "orchestration.reviseTradingPlan",
   activateTradingPlanDocument: "orchestration.activateTradingPlanDocument",
   armTradingWatch: "orchestration.armTradingWatch",
@@ -2568,6 +2581,14 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationGetTradingResearchScenesInput,
     output: TradingResearchScenesView,
   },
+  getResearchJob: { input: GetResearchJobInput, output: GetResearchJobResult },
+  cancelResearchJob: { input: GetResearchJobInput, output: GetResearchJobResult },
+  resumeResearchJob: { input: GetResearchJobInput, output: GetResearchJobResult },
+  getResearchDatasetWindow: {
+    input: GetResearchDatasetWindowInput,
+    output: GetResearchDatasetWindowResult,
+  },
+  getSavedResearch: { input: GetSavedResearchInput, output: GetSavedResearchResult },
   reviseTradingPlan: {
     input: OrchestrationReviseTradingPlanInput,
     output: OrchestrationReviseTradingPlanResult,

@@ -34,6 +34,8 @@
  * @module TradingEventSets
  */
 import * as Schema from "effect/Schema";
+import { EventLongScenario } from "./eventLongSimulation.ts";
+import { ResearchJobView } from "./researchData.ts";
 
 import type { MarketCandle } from "./market.ts";
 import { UnixMillis, TradingMarket } from "./primitives.ts";
@@ -1316,6 +1318,8 @@ export const TradingEventsAction = Schema.Literals([
   "list",
   "show",
   "study",
+  "study_graph",
+  "simulate_long",
   "retire",
 ]);
 export type TradingEventsAction = typeof TradingEventsAction.Type;
@@ -1467,6 +1471,13 @@ export const TradingEventsInput = Schema.Struct({
   /** Attribution, never authority: an event set takes no mission state. */
   missionId: Schema.optional(Schema.String),
   action: Schema.optional(TradingEventsAction),
+  /** User-facing UTC date bounds, both dates included. */
+  from: Schema.optional(Schema.String),
+  to: Schema.optional(Schema.String),
+  category: Schema.optional(Schema.Literals(["scheduled", "unscheduled", "all"])),
+  horizonsMs: Schema.optional(Schema.Array(Schema.Int.check(Schema.isGreaterThan(0)))),
+  parentStudyId: Schema.optional(Schema.String),
+  scenario: Schema.optional(EventLongScenario),
   /** Required by everything except `record`, `preview` and `list`. */
   eventSetId: Schema.optional(Schema.String),
   /** Required by `record`, and by `preview` when the preview is for a record. */
@@ -1522,6 +1533,7 @@ export const TradingEventsInput = Schema.Struct({
 export type TradingEventsInput = typeof TradingEventsInput.Type;
 
 export const TradingEventsResult = Schema.Struct({
+  researchJob: Schema.optional(ResearchJobView),
   /** Set by `record`, `add`, `show` and `retire`. */
   eventSet: Schema.optional(TradingEventSet),
   /** Set by `list`. */
@@ -1612,13 +1624,15 @@ export function serializeEventSetContent(set: {
  */
 export function renderTradingEventsMenu(): string {
   return [
-    "preview {name?, occurrences: [{start, end?, precision?, label?, source}]} reads them back with a confirmationDigest; a name previews a record, no name an add",
-    "record {name, description?, occurrences} creates or replaces a set's dates (case-insensitive name, retired revives, re-recording corrects); add {eventSetId, occurrences} appends, show/retire {eventSetId}, list",
-    "dates are UTC ISO: date-only start/end is date precision (whole days; a missing end spans the start day, a date-only end through that day); a timed start is exact and needs its timed end: same instant is an activation, later a window; a timed start with no end is refused, not padded; declared precision (instant/window/date) contradictions refuse",
-    `one source per occurrence (the URL, or "user provided"), never several joined, ${EVENT_SET_MAX_OCCURRENCES} max a set; record/add take requireReadBack: true and the preview's confirmationDigest`,
-    `study {eventSetId, market, interval?, horizonBars?, entryBasis?, metric?} measures per-occurrence forward return vs an every-bar baseline, entryBasis first_closed_bar_after_event (default), interval 1m 3m 5m 15m 1h 4h 1d: a four-week daily study is interval 1d, horizonBars 28; coarsest interval covering the window; metric path_extrema {direction} adds the post-entry extremum and excursion, hindsight-perfect; uncovered occurrences reported, not dropped`,
-    `a hit rate needs a recorded excursionThresholdPct (negative for a short's dip, long convention): without one, present each occurrence's excursion and ask; with one, hits are counted over complete horizons against a matched every-bar baseline, and thresholdChosenAfterResults: true is recorded when the number was picked after seeing results`,
-    `a lowest/highest-point exit is hindsight, never a rule: backtesting or validating an event idea needs a prospective exit (stop, target, or maxHoldBars)`,
-    "theses anchor with operand {source: event, eventSetId, label}: bars since the most recent ended occurrence; profit simulation is trading_backtest's",
+    "study_graph {from,to,category?,horizonsMs?}: official FOMC plus checked Ethereum WETH/USDC v3 Graph; retained researchJob.jobId, then studyId; default +1h/+24h/+7d",
+    "simulate_long {parentStudyId,scenario} models independent longs from saved prices; size/cost changes reuse them; no orders",
+    "preview {name?,occurrences:[{start,end?,precision?,label?,source}]} returns confirmationDigest; name means record, no name means add",
+    "record {name,description?,occurrences} replaces dates; add {eventSetId,occurrences} appends; show,retire,list",
+    "dates are UTC ISO: date-only is date precision (whole days); same instant is an activation, later is a window; a timed start with no end is refused; declared instant/window/date must agree",
+    `one source per occurrence (URL or "user provided"), never several joined; ${EVENT_SET_MAX_OCCURRENCES} max; record/add need requireReadBack: true and confirmationDigest`,
+    "study {eventSetId,market,interval?,horizonBars?,entryBasis?,metric?}: forward return vs every-bar baseline; entryBasis first_closed_bar_after_event; interval 1m 3m 5m 15m 1h 4h 1d; a four-week daily study is interval 1d, horizonBars 28; choose coarsest interval; path_extrema {direction} adds hindsight-perfect excursion; uncovered rows remain",
+    "excursionThresholdPct (negative for a short's dip) gives a hit rate over complete horizons and a matched baseline; thresholdChosenAfterResults marks in-sample exploration",
+    "lowest/highest-point exit is hindsight; backtests need a prospective stop, target or maxHoldBars",
+    "theses use operand {source:event,eventSetId,label}; profit simulation uses trading_backtest",
   ].join(" · ");
 }

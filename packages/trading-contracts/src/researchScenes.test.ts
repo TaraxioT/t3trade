@@ -11,10 +11,41 @@ import {
   SCENE_MAX_LAYERS,
   SCENE_MAX_TEXT_CHARS,
   TradingChartScene,
+  TradingChartResult,
   composeEventStudyScene,
   renderTradingChartMenu,
   validateTradingChartScene,
 } from "./researchScenes.ts";
+
+it("decodes a saved Graph result with its scoped chart action", () => {
+  const source = {
+    provider: "the_graph",
+    chain: "ethereum",
+    subgraphId: "subgraph",
+    deployment: "deployment",
+    poolAddress: "pool",
+    baseTokenAddress: "weth",
+    quoteTokenAddress: "usdc",
+    feeTier: "3000",
+    normalizationVersion: 1,
+  };
+  const result = Schema.decodeUnknownSync(TradingChartResult)({
+    openResearch: {
+      kind: "open_research_scene",
+      environmentId: "env-1",
+      threadId: "thread-1",
+      sceneId: "scene-1",
+      market: "ETH",
+      source,
+      datasetIds: ["dataset-1"],
+      resultKind: "event_study",
+      studyId: "study-1",
+      view: "calendar",
+      label: "Open on graph",
+    },
+  });
+  expect(result.openResearch?.datasetIds).toEqual(["dataset-1"]);
+});
 
 const NOW = 1_800_000_000_000;
 const DAY = 24 * 60 * 60 * 1_000;

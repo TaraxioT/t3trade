@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  ORCHESTRATION_WS_METHODS,
   AuthRelayReadScope,
   AuthRelayWriteScope,
   WS_METHODS,
@@ -11,6 +12,21 @@ import { describe, expect, it } from "@effect/vitest";
 import { RPC_REQUIRED_SCOPES, requiredScopeForRpcMethod } from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("separates saved research reads from cancel and resume commands", () => {
+    for (const method of [
+      ORCHESTRATION_WS_METHODS.getResearchJob,
+      ORCHESTRATION_WS_METHODS.getResearchDatasetWindow,
+      ORCHESTRATION_WS_METHODS.getSavedResearch,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of [
+      ORCHESTRATION_WS_METHODS.cancelResearchJob,
+      ORCHESTRATION_WS_METHODS.resumeResearchJob,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
