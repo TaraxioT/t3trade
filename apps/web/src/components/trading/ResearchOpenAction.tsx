@@ -70,9 +70,11 @@ export function ResearchOpenAction(props: {
     const scope = threadMarketScopeKey(props.environmentId, props.threadId, action.market);
     useThreadMarketPanelStore.getState().setCardCollapsed(props.threadKey, false);
     const card = useThreadMarketCardStore.getState();
-    card.setGraphMode(scope, "research");
-    card.setResearchSceneId(scope, action.sceneId);
-    card.setResearchView(scope, action.view === "event_aligned" ? "aligned" : "calendar");
+    card.openResearchScene(
+      scope,
+      action.sceneId,
+      action.view === "event_aligned" ? "aligned" : "calendar",
+    );
     refreshTradingThreadMarket(props.environmentId, props.threadId);
     refreshTradingResearchScenes(props.environmentId, props.threadId);
     requestAnimationFrame(() => {

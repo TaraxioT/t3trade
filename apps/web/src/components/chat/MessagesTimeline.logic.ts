@@ -28,6 +28,7 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
+import { asRecord, readTradingCardResult } from "../trading/cardPayload";
 import type { QueuedComposerMessage } from "../../queuedMessageStore";
 import {
   type MessageId,
@@ -106,6 +107,16 @@ export function workEntryIsVisibleInGroup(
         entry.sourceActivityKind === "task.progress")) ||
     !workEntryIndicatesToolNeutralStatus(entry)
   );
+}
+
+function isSavedResearchToolEntry(entry: WorkLogEntry): boolean {
+  if (entry.itemType !== "mcp_tool_call") return false;
+  const events = asRecord(readTradingCardResult(entry.toolData, "trading_events"));
+  const job = asRecord(events?.researchJob);
+  if (typeof job?.jobId === "string") return true;
+  const chart = asRecord(readTradingCardResult(entry.toolData, "trading_chart"));
+  const action = asRecord(chart?.openResearch);
+  return action?.kind === "open_research_scene";
 }
 
 export interface WorkGroupScrollAnchor {
@@ -919,10 +930,15 @@ export function deriveMessagesTimelineRows(input: {
     unfoldedTurnIds: activeVisualResponseTurnIds,
   });
   const collapsedEntryIds = new Set<string>();
+  const researchToolEntryIds = new Set(
+    input.timelineEntries.flatMap((entry) =>
+      entry.kind === "work" && isSavedResearchToolEntry(entry.entry) ? [entry.id] : [],
+    ),
+  );
   for (const fold of foldsByAnchorEntryId.values()) {
     if (!input.expandedTurnIds?.has(fold.turnId)) {
       for (const entryId of fold.hiddenEntryIds) {
-        collapsedEntryIds.add(entryId);
+        if (!researchToolEntryIds.has(entryId)) collapsedEntryIds.add(entryId);
       }
     }
   }
@@ -1080,6 +1096,16 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
+      if (isSavedResearchToolEntry(timelineEntry.entry)) {
+        nextRows.push({
+          kind: "work",
+          id: timelineEntry.id,
+          createdAt: timelineEntry.createdAt,
+          groupedEntries: [timelineEntry.entry],
+          isExpandedToolGroup: false,
+        });
+        continue;
+      }
       if (
         timelineEntry.entry.agentSpawn !== undefined ||
         timelineEntry.entry.questionAnswer !== undefined ||
@@ -1111,6 +1137,7 @@ export function deriveMessagesTimelineRows(input: {
           nextEntry.entry.questionAnswer !== undefined ||
           nextEntry.entry.sourceActivityKind === "context-compaction" ||
           nextEntry.entry.tone === "error" ||
+          isSavedResearchToolEntry(nextEntry.entry) ||
           activeWorkEntryIds.has(nextEntry.id) ||
           collapsedEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id)

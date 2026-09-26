@@ -226,11 +226,16 @@ describe("GraphHistoricalData", () => {
 
   it("reads a half-open paged swap window at the inspected snapshot", async () => {
     const queries: string[] = [];
+    const blocks: string[] = [];
     const graph = makeGraphHistoricalData({
       env: { T3_GRAPH_API_KEY: "secret" },
       fetch: async (_url, init) => {
-        const body = JSON.parse(String(init?.body)) as { query: string };
+        const body = JSON.parse(String(init?.body)) as {
+          query: string;
+          variables: { block?: string | number };
+        };
         queries.push(body.query);
+        if (body.variables.block !== undefined) blocks.push(String(body.variables.block));
         if (queries.length === 1) return response(metadata);
         return response({
           data: {
@@ -265,5 +270,7 @@ describe("GraphHistoricalData", () => {
     expect(page.rows[0] && "price" in page.rows[0] ? page.rows[0].price : null).toBeCloseTo(1, 12);
     expect(page.nextCursor).toBe("a");
     expect(queries[1]).toContain("timestamp_lt");
+    expect(queries[1]).toContain("block: { hash: $block }");
+    expect(blocks).toEqual([capability.snapshotBlock.hash]);
   });
 });

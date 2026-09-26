@@ -70,26 +70,26 @@ const INSPECT_QUERY = `query Inspect($pool: ID!) {
   lastDay: poolDayDatas(first: 1, orderBy: date, orderDirection: desc, where: { pool: $pool }) { id date }
 }`;
 
-const SWAP_QUERY = `query Window($pool: ID!, $block: Int!, $from: BigInt!, $to: BigInt!, $cursor: String!, $first: Int!) {
-  _meta(block: { number: $block }) { deployment block { number hash } hasIndexingErrors }
-  pool(id: $pool, block: { number: $block }) { id feeTier token0 { id decimals } token1 { id decimals } }
-  swaps(first: $first, orderBy: id, orderDirection: asc, where: { pool: $pool, timestamp_gte: $from, timestamp_lt: $to, id_gt: $cursor }, block: { number: $block }) {
+const SWAP_QUERY = `query Window($pool: ID!, $block: String!, $from: BigInt!, $to: BigInt!, $cursor: String!, $first: Int!) {
+  _meta(block: { hash: $block }) { deployment block { number hash } hasIndexingErrors }
+  pool(id: $pool, block: { hash: $block }) { id feeTier token0 { id decimals } token1 { id decimals } }
+  swaps(first: $first, orderBy: id, orderDirection: asc, where: { pool: $pool, timestamp_gte: $from, timestamp_lt: $to, id_gt: $cursor }, block: { hash: $block }) {
     id timestamp sqrtPriceX96 logIndex transaction { id blockNumber }
   }
 }`;
 
-const HOUR_QUERY = `query Window($pool: ID!, $block: Int!, $from: Int!, $to: Int!, $cursor: String!, $first: Int!) {
-  _meta(block: { number: $block }) { deployment block { number hash } hasIndexingErrors }
-  pool(id: $pool, block: { number: $block }) { id feeTier token0 { id decimals } token1 { id decimals } }
-  poolHourDatas(first: $first, orderBy: id, orderDirection: asc, where: { pool: $pool, periodStartUnix_gte: $from, periodStartUnix_lt: $to, id_gt: $cursor }, block: { number: $block }) {
+const HOUR_QUERY = `query Window($pool: ID!, $block: String!, $from: Int!, $to: Int!, $cursor: String!, $first: Int!) {
+  _meta(block: { hash: $block }) { deployment block { number hash } hasIndexingErrors }
+  pool(id: $pool, block: { hash: $block }) { id feeTier token0 { id decimals } token1 { id decimals } }
+  poolHourDatas(first: $first, orderBy: id, orderDirection: asc, where: { pool: $pool, periodStartUnix_gte: $from, periodStartUnix_lt: $to, id_gt: $cursor }, block: { hash: $block }) {
     id periodStartUnix open high low close
   }
 }`;
 
-const DAY_QUERY = `query Window($pool: ID!, $block: Int!, $from: Int!, $to: Int!, $cursor: String!, $first: Int!) {
-  _meta(block: { number: $block }) { deployment block { number hash } hasIndexingErrors }
-  pool(id: $pool, block: { number: $block }) { id feeTier token0 { id decimals } token1 { id decimals } }
-  poolDayDatas(first: $first, orderBy: id, orderDirection: asc, where: { pool: $pool, date_gte: $from, date_lt: $to, id_gt: $cursor }, block: { number: $block }) {
+const DAY_QUERY = `query Window($pool: ID!, $block: String!, $from: Int!, $to: Int!, $cursor: String!, $first: Int!) {
+  _meta(block: { hash: $block }) { deployment block { number hash } hasIndexingErrors }
+  pool(id: $pool, block: { hash: $block }) { id feeTier token0 { id decimals } token1 { id decimals } }
+  poolDayDatas(first: $first, orderBy: id, orderDirection: asc, where: { pool: $pool, date_gte: $from, date_lt: $to, id_gt: $cursor }, block: { hash: $block }) {
     id date open high low close
   }
 }`;
@@ -400,7 +400,7 @@ export function makeGraphHistoricalData(
               : DAY_QUERY;
         const data = yield* query(request.source.subgraphId, graphql, {
           pool: request.poolAddress,
-          block: request.snapshotBlock.number,
+          block: request.snapshotBlock.hash,
           from: request.entityKind === "swaps" ? String(from) : from,
           to: request.entityKind === "swaps" ? String(to) : to,
           cursor,

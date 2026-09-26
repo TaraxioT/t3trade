@@ -55,6 +55,7 @@ it("discovers saved Graph research and publication in the two research tools", (
   const chart = TradingToolkit.tools[TRADING_CHART_TOOL].description ?? "";
   expect(events).toContain("study_graph");
   expect(events).toContain("simulate_long");
+  expect(events).toContain("maxEntryWaitMs:300000");
   expect(chart).toContain("publish_saved_research");
 });
 

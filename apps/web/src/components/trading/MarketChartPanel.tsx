@@ -77,7 +77,11 @@ import {
   type GraphViewMode,
 } from "./researchScenePresentation.ts";
 import { useTradingResearchScenes } from "../../lib/tradingResearchScenesState";
-import { threadMarketScopeKey, useThreadResearchViewState } from "./threadMarketCardState";
+import {
+  threadMarketScopeKey,
+  useThreadMarketCardStore,
+  useThreadResearchViewState,
+} from "./threadMarketCardState";
 
 /** The graph's three views, in tab order. Live is first and is the home. */
 const VIEW_MODES: ReadonlyArray<GraphViewMode> = ["live", "calendar", "aligned"];
@@ -283,13 +287,28 @@ export function MarketChartPanel({
   // graph back to Live, because Calendar and Event aligned have nothing to
   // show without them. The decision is pure (`nextGraphViewMode`) so the
   // stickiness is testable without a running effect loop.
+  const confirmedScenePresence =
+    scenes.scenes === null || scenes.isLoading || scenes.error !== null ? null : hasScenes;
   const hadScenesRef = useRef(hasScenes);
   useEffect(() => {
+    if (confirmedScenePresence === null) return;
+    // Read the current selection when this effect runs: a saved-scene action
+    // can update the store while a scene refresh from the prior view is pending.
+    const currentSelection = threadScopeKey
+      ? (useThreadMarketCardStore.getState().researchViewByScope[threadScopeKey]?.selectedSceneId ??
+        null)
+      : selectedSceneId;
     setView((current: GraphViewMode) =>
-      nextGraphViewMode({ current, hasScenes, previouslyHadScenes: hadScenesRef.current }),
+      nextGraphViewMode({
+        current,
+        hasScenes: confirmedScenePresence,
+        previouslyHadScenes: hadScenesRef.current,
+        selectedSceneId: currentSelection,
+      }),
     );
-    hadScenesRef.current = hasScenes;
-  }, [hasScenes]);
+    if (confirmedScenePresence || currentSelection === null)
+      hadScenesRef.current = confirmedScenePresence;
+  }, [confirmedScenePresence, selectedSceneId, threadScopeKey]);
 
   // When the selected event-study scene changes, fit the range once so the
   // study's occurrences land inside the window (see the gate above; a scene

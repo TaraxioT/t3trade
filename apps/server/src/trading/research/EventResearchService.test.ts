@@ -9,6 +9,7 @@ import type {
   ResearchPriceSample,
 } from "@t3tools/trading-contracts/researchData";
 import type { EventResearchRecipe } from "@t3tools/trading-contracts/eventResearch";
+import { simulateEventLongs } from "@t3tools/trading-contracts/eventLongSimulation";
 
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { GraphHistoricalData, type GraphHistoricalDataShape } from "./GraphHistoricalData.ts";
@@ -77,13 +78,13 @@ const sample = (id: string, at: number, price: number): ResearchPriceSample => (
 });
 const samples = [
   sample("pre", eventAt - 60_000, 100),
-  sample("entry", eventAt + 5 * 60_000, 100),
+  sample("entry", eventAt + 9 * 60_000, 100),
   sample("hour", eventAt + 3_600_000, 101),
-  sample("hourlong", eventAt + 65 * 60_000, 102),
+  sample("hourlong", eventAt + 72 * 60_000, 102),
   sample("day", eventAt + 86_400_000, 98),
-  sample("daylong", eventAt + 86_700_000, 99),
+  sample("daylong", eventAt + 86_400_000 + 12 * 60_000, 99),
   sample("week", eventAt + 7 * 86_400_000, 110),
-  sample("weeklong", eventAt + 7 * 86_400_000 + 300_000, 111),
+  sample("weeklong", eventAt + 7 * 86_400_000 + 12 * 60_000, 111),
 ];
 
 function graphFixture(calls: { count: number }): GraphHistoricalDataShape {
@@ -182,6 +183,21 @@ layer("EventResearchService", (it) => {
         const study = yield* store.readStudy(completed[0]!.studyId!);
         assert.equal(study.report.rows[0]?.horizons[0]?.status, "measured");
         assert.equal(study.priceSamples.length, samples.length);
+        for (const holdMs of [3_600_000, 86_400_000, 7 * 86_400_000]) {
+          const long = simulateEventLongs({
+            parentStudy: study,
+            scenario: {
+              notionalQuote: 1_000,
+              entryDelayMs: 300_000,
+              holdMs,
+              maxEntryWaitMs: 300_000,
+              maxExitWaitMs: 300_000,
+              feeBpsPerSide: 5,
+              slippageBpsPerSide: 5,
+            },
+          });
+          assert.equal(long.summary.coveredTrades, 1);
+        }
         const beforeRead = calls.count;
         const reopened = yield* store.readStudy(study.studyId);
         assert.deepEqual(reopened, study);
@@ -205,6 +221,56 @@ layer("EventResearchService", (it) => {
       const completed = yield* service.drain();
       assert.equal(completed.find((job) => job.jobId === started.jobId)?.status, "complete");
       assert.equal(calls.count, before);
+    }),
+  );
+
+  it.effect("accepts a calendar retrieved after the Graph indexing cutoff", () =>
+    Effect.gen(function* () {
+      yield* runMigrations({});
+      const service = yield* EventResearchService;
+      const laterCalendar = {
+        ...recipe,
+        eventInventory: {
+          ...recipe.eventInventory,
+          id: "later-calendar",
+          asOf: recipe.cutoffAt + 60_000,
+          retrievedAt: recipe.cutoffAt + 60_000,
+        },
+      };
+      const started = yield* service.start(laterCalendar);
+      assert.equal(started.status, "queued");
+    }),
+  );
+
+  it.effect("plans bounded hourly windows across a long calendar range", () =>
+    Effect.gen(function* () {
+      yield* runMigrations({});
+      const service = yield* EventResearchService;
+      const laterAt = Date.parse("2026-04-28T18:00:00Z");
+      const longRange = {
+        ...recipe,
+        to: "2026-05-07",
+        cutoffAt: laterAt + 8 * 86_400_000,
+        eventInventory: {
+          ...recipe.eventInventory,
+          id: "long-range",
+          to: "2026-05-07",
+          asOf: laterAt + 8 * 86_400_000,
+          retrievedAt: laterAt + 8 * 86_400_000,
+          occurrences: [
+            event,
+            {
+              ...event,
+              id: "fomc:scheduled:2026-04-28",
+              meetingFrom: "2026-04-27",
+              meetingTo: "2026-04-28",
+              statementAt: laterAt,
+            },
+          ],
+        },
+      };
+      const started = yield* service.start(longRange);
+      assert.equal(started.plannedWindows, 10);
     }),
   );
 });

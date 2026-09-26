@@ -39,6 +39,7 @@ const encodeRecipe = Schema.encodeSync(Schema.fromJsonString(EventResearchRecipe
 const encodeReport = Schema.encodeSync(Schema.fromJsonString(EventResearchReport));
 const DAY = 86_400_000;
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const STUDY_LEASE_MS = 30 * MINUTE;
 
 interface WindowPlan {
@@ -52,10 +53,15 @@ function error(reason: ResearchError["reason"], detail: string): ResearchError {
 }
 
 function studyIdentity(recipe: EventResearchRecipe): string {
-  return NodeCrypto.createHash("sha256").update(encodeRecipe(recipe)).digest("hex");
+  // Planner identity prevents an older complete study with narrower retained
+  // windows from being reused for a default long that needs extra samples.
+  return NodeCrypto.createHash("sha256")
+    .update("plan-v2")
+    .update(encodeRecipe(recipe))
+    .digest("hex");
 }
 
-/** One wide aggregate window and narrow swap windows covering the default follow-ups. */
+/** Bound aggregate queries so multi-year filters remain serviceable on the Graph gateway. */
 function planWindows(recipe: EventResearchRecipe): ReadonlyArray<WindowPlan> {
   const events = recipe.eventInventory.occurrences.flatMap((event) =>
     event.statementAt === null ? [] : [event.statementAt],
@@ -65,17 +71,26 @@ function planWindows(recipe: EventResearchRecipe): ReadonlyArray<WindowPlan> {
   const latest = Math.max(...events);
   const maxHorizon = Math.max(...recipe.horizonsMs, 7 * DAY);
   const contextTo = Math.min(recipe.cutoffAt + 1, latest + maxHorizon + DAY);
-  const windows: WindowPlan[] = [
-    { entityKind: "hour", from: Math.max(0, earliest - DAY), to: contextTo },
-  ];
+  const windows: WindowPlan[] = [];
+  for (let from = Math.max(0, earliest - DAY); from < contextTo;) {
+    const to = Math.min(contextTo, from + 30 * DAY);
+    windows.push({ entityKind: "hour", from, to });
+    from = to;
+  }
   const maxDelay = recipe.referencePriceRule.afterMaxDelayMs;
+  // A default long may enter 5–10 minutes after the statement and exit up to
+  // five minutes after its hold endpoint. Retain that full range up front.
+  const defaultLongExitSpan = 15 * MINUTE;
   for (const eventAt of events) {
     const firstFrom = Math.max(0, eventAt - recipe.referencePriceRule.beforeMaxAgeMs);
-    const firstTo = Math.min(recipe.cutoffAt + 1, eventAt + 65 * MINUTE + maxDelay + 1);
+    const firstTo = Math.min(
+      recipe.cutoffAt + 1,
+      eventAt + HOUR + Math.max(maxDelay, defaultLongExitSpan) + 1,
+    );
     if (firstTo > firstFrom) windows.push({ entityKind: "swaps", from: firstFrom, to: firstTo });
     for (const offset of [DAY, 7 * DAY]) {
       const from = eventAt + offset;
-      const to = Math.min(recipe.cutoffAt + 1, from + 5 * MINUTE + maxDelay + 1);
+      const to = Math.min(recipe.cutoffAt + 1, from + Math.max(maxDelay, defaultLongExitSpan) + 1);
       if (to > from) windows.push({ entityKind: "swaps", from, to });
     }
     for (const horizon of recipe.horizonsMs) {
@@ -269,7 +284,6 @@ export const makeEventResearchService = (options: { readonly autoStart?: boolean
           recipe.horizonsMs.length === 0 ||
           new Set(recipe.horizonsMs).size !== recipe.horizonsMs.length ||
           recipe.eventInventory.occurrences.length > 200 ||
-          recipe.eventInventory.asOf > recipe.cutoffAt ||
           recipe.to <= recipe.from ||
           recipe.eventInventory.occurrences.some(
             (event) => event.meetingTo < recipe.from || event.meetingTo >= recipe.to,

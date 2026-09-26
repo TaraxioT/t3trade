@@ -51,6 +51,11 @@ export function threadMarketScopeKey(
 interface ThreadMarketCardStoreState {
   readonly graphModeByScope: Readonly<Record<string, ThreadMarketGraphMode>>;
   readonly setGraphMode: (scopeKey: string, mode: ThreadMarketGraphMode) => void;
+  readonly openResearchScene: (
+    scopeKey: string,
+    sceneId: string,
+    view: "calendar" | "aligned",
+  ) => void;
   readonly studyOverlayByScope: Readonly<Record<string, string | null>>;
   readonly setStudyOverlay: (scopeKey: string, sceneId: StateUpdater<string | null>) => void;
   readonly researchViewByScope: Readonly<Record<string, ThreadResearchViewState>>;
@@ -75,6 +80,18 @@ export const useThreadMarketCardStore = create<ThreadMarketCardStoreState>()(
       setGraphMode: (scopeKey, mode) =>
         set((state) => ({
           graphModeByScope: { ...state.graphModeByScope, [scopeKey]: mode },
+        })),
+      openResearchScene: (scopeKey, sceneId, view) =>
+        set((state) => ({
+          graphModeByScope: { ...state.graphModeByScope, [scopeKey]: "research" },
+          researchViewByScope: {
+            ...state.researchViewByScope,
+            [scopeKey]: {
+              ...(state.researchViewByScope[scopeKey] ?? DEFAULT_RESEARCH_VIEW_STATE),
+              selectedSceneId: sceneId,
+              view,
+            },
+          },
         })),
       studyOverlayByScope: {},
       setStudyOverlay: (scopeKey, sceneId) =>

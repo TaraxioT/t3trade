@@ -45,6 +45,67 @@ import {
 import { isImageAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
 
 describe("streaming row projection", () => {
+  it("keeps a saved research job card visible when its turn is folded", () => {
+    const turnId = TurnId.make("research-turn");
+    const time = (second: number) => new Date(Date.UTC(2026, 8, 26, 0, 0, second)).toISOString();
+    const timelineEntries = [
+      {
+        id: "research-user",
+        kind: "message" as const,
+        createdAt: time(0),
+        message: {
+          id: MessageId.make("research-user"),
+          role: "user" as const,
+          text: "Study FOMC",
+          turnId,
+          createdAt: time(0),
+          updatedAt: time(0),
+          streaming: false,
+        },
+      },
+      {
+        id: "research-tool",
+        kind: "work" as const,
+        createdAt: time(1),
+        entry: {
+          id: "research-tool",
+          turnId,
+          createdAt: time(1),
+          label: "trading_events",
+          tone: "tool" as const,
+          itemType: "mcp_tool_call" as const,
+          toolData: {
+            tool: "trading_events",
+            result: { content: JSON.stringify({ researchJob: { jobId: "job-1" } }) },
+          },
+        },
+      },
+      {
+        id: "research-answer",
+        kind: "message" as const,
+        createdAt: time(2),
+        message: {
+          id: MessageId.make("research-answer"),
+          role: "assistant" as const,
+          text: "Queued",
+          turnId,
+          createdAt: time(2),
+          updatedAt: time(2),
+          streaming: false,
+        },
+      },
+    ];
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(true);
+    expect(rows.some((row) => row.kind === "work" && row.id === "research-tool")).toBe(true);
+  });
+
   function fixture(text = "") {
     const turnId = TurnId.make("live-turn");
     const historyTurnId = TurnId.make("history-turn");

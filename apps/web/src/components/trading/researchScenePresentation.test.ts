@@ -195,6 +195,27 @@ describe("nextGraphViewMode (thread-scoped mode-switch state)", () => {
     }
   });
 
+  it("keeps the selected research view during a scene refresh", () => {
+    expect(
+      nextGraphViewMode({
+        current: "calendar",
+        hasScenes: null,
+        previouslyHadScenes: true,
+      }),
+    ).toBe("calendar");
+  });
+
+  it("keeps an explicit saved-scene selection while publication replaces the active scene", () => {
+    expect(
+      nextGraphViewMode({
+        current: "calendar",
+        hasScenes: false,
+        previouslyHadScenes: true,
+        selectedSceneId: "new-saved-scene",
+      }),
+    ).toBe("calendar");
+  });
+
   it("preserves a restored research view while its scene request is still empty", () => {
     expect(
       nextGraphViewMode({ current: "aligned", hasScenes: false, previouslyHadScenes: false }),

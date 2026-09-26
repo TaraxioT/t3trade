@@ -7,6 +7,25 @@ import {
 } from "./threadMarketCardState";
 
 describe("threadMarketCardState", () => {
+  it("opens a saved scene with its market mode, view, and identity in one state change", () => {
+    const scope = "saved-env:saved-thread:ETH";
+    const { openResearchScene } = useThreadMarketCardStore.getState();
+    const states: Array<{
+      readonly view: string | undefined;
+      readonly scene: string | null | undefined;
+    }> = [];
+    const unsubscribe = useThreadMarketCardStore.subscribe((state) => {
+      states.push({
+        view: state.researchViewByScope[scope]?.view,
+        scene: state.researchViewByScope[scope]?.selectedSceneId,
+      });
+    });
+    openResearchScene(scope, "saved-scene", "calendar");
+    unsubscribe();
+    expect(states).toEqual([{ view: "calendar", scene: "saved-scene" }]);
+    expect(useThreadMarketCardStore.getState().graphModeByScope[scope]).toBe("research");
+  });
+
   it("computes canonical scope keys", () => {
     expect(threadMarketScopeKey("env-1", "thread-1", "ETH")).toBe("env-1:thread-1:ETH");
     expect(threadMarketScopeKey("env-1", "thread-1", "BTC")).toBe("env-1:thread-1:BTC");

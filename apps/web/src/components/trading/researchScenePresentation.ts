@@ -62,12 +62,15 @@ export function activeGraphScenes(
  */
 export function nextGraphViewMode(input: {
   readonly current: GraphViewMode;
-  readonly hasScenes: boolean;
+  /** Null means the scene read is loading or failed, so absence is unconfirmed. */
+  readonly hasScenes: boolean | null;
   readonly previouslyHadScenes: boolean;
+  readonly selectedSceneId?: string | null;
 }): GraphViewMode {
   // Scenes just arrived: keep whatever the reader is looking at, Live
   // included. Research decorates the live graph; it does not take it over.
-  if (input.hasScenes) return input.current;
+  if (input.hasScenes === null || input.hasScenes) return input.current;
+  if (input.selectedSceneId != null) return input.current;
   // A reload starts with an empty scene query. Keep the persisted selection
   // until that query has actually shown a scene and later loses it.
   if (!input.previouslyHadScenes) return input.current;

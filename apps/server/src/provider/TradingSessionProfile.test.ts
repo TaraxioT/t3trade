@@ -117,6 +117,7 @@ it("routes sourced FOMC research through retained Graph jobs and saved chart act
   expect(TRADING_TOOL_POLICY).toContain("Graph");
   expect(TRADING_TOOL_POLICY).toContain("study_graph");
   expect(TRADING_TOOL_POLICY).toContain("simulate_long");
+  expect(TRADING_TOOL_POLICY).toContain("five-minute sample waits");
   expect(TRADING_TOOL_POLICY).toContain("publish_saved_research");
   expect(TRADING_TOOL_POLICY).toContain("saved studyId");
   expect(TRADING_TOOL_POLICY).not.toContain("product archive is the only market-data source");
