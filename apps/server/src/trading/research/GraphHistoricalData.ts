@@ -1,4 +1,4 @@
-import { Context, Effect, Schema } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 
 import {
   GraphDataError,
@@ -504,3 +504,8 @@ export function makeGraphHistoricalData(
       }),
   };
 }
+
+export const GraphHistoricalDataLive: Layer.Layer<GraphHistoricalData> = Layer.succeed(
+  GraphHistoricalData,
+  makeGraphHistoricalData(),
+);

@@ -70,6 +70,15 @@ import { TradingHypothesisServiceLive } from "./TradingHypothesisService.ts";
 import { TradingThesisValidationServiceLive } from "./TradingThesisValidationService.ts";
 import { TradingEventServiceLive } from "./TradingEventService.ts";
 import { TradingResearchSceneServiceLive } from "./TradingResearchSceneService.ts";
+import { GraphHistoricalDataLive } from "./research/GraphHistoricalData.ts";
+import { ResearchDatasetStoreLive } from "./research/ResearchDatasetStore.ts";
+import { ResearchAcquisitionServiceLive } from "./research/ResearchAcquisitionService.ts";
+import { ResearchAcquisitionWorkerLive } from "./research/ResearchAcquisitionWorker.ts";
+
+const GraphResearchLayerLive = ResearchAcquisitionServiceLive.pipe(
+  Layer.provideMerge(ResearchAcquisitionWorkerLive),
+  Layer.provideMerge(Layer.mergeAll(ResearchDatasetStoreLive, GraphHistoricalDataLive)),
+);
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -215,6 +224,7 @@ const TradingExecutionLayerLive = Layer.mergeAll(
 ).pipe(Layer.provideMerge(TradingProtectionLayerLive));
 
 export const TradingLayerLive = Layer.mergeAll(
+  GraphResearchLayerLive,
   // `trading_look`'s archive-backed fetch keys (plan 38 §2.4). Read-only over
   // the archiver's own file; a missing archive answers unavailable, not zero.
   TradingMarketArchiveLive,

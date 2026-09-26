@@ -1,4 +1,5 @@
 import Migration0103 from "./Migrations/103_ProjectionThreadTitleState.ts";
+import Migration0104 from "./Migrations/104_GraphResearch.ts";
 import Migration0102 from "./Migrations/102_ProjectionThreadMessageContext.ts";
 import Migration0101 from "./Migrations/101_ProjectionThreadPullRequests.ts";
 /**
@@ -237,6 +238,7 @@ const migrationEntries = [
   [101, "ProjectionThreadPullRequests", Migration0101],
   [102, "ProjectionThreadMessageContext", Migration0102],
   [103, "ProjectionThreadTitleState", Migration0103],
+  [104, "GraphResearch", Migration0104],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

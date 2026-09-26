@@ -110,3 +110,71 @@ export interface GraphWindowPage {
     readonly snapshotBlock: GraphSnapshotBlock;
   };
 }
+
+export const ResearchJobStatus = Schema.Literals([
+  "queued",
+  "running",
+  "paused",
+  "cancelled",
+  "complete",
+  "failed",
+]);
+export type ResearchJobStatus = typeof ResearchJobStatus.Type;
+
+export const ResearchJobView = Schema.Struct({
+  jobId: Schema.String,
+  datasetId: Schema.String,
+  environmentId: Schema.String,
+  threadId: Schema.String,
+  source: GraphSourceRef,
+  snapshotBlock: GraphSnapshotBlock,
+  entityKind: GraphEntityKind,
+  from: NonNegativeInt,
+  to: NonNegativeInt,
+  status: ResearchJobStatus,
+  rowCount: NonNegativeInt,
+  requestCount: NonNegativeInt,
+  storedBytes: NonNegativeInt,
+  cursor: Schema.NullOr(Schema.String),
+  updatedAt: NonNegativeInt,
+  failureReason: Schema.optional(Schema.String),
+});
+export type ResearchJobView = typeof ResearchJobView.Type;
+
+export const ResearchAcquisitionRequest = Schema.Struct({
+  environmentId: Schema.String,
+  threadId: Schema.String,
+  source: GraphSourceRef,
+  snapshotBlock: GraphSnapshotBlock,
+  entityKind: GraphEntityKind,
+  from: NonNegativeInt,
+  to: NonNegativeInt,
+});
+export type ResearchAcquisitionRequest = typeof ResearchAcquisitionRequest.Type;
+
+export const ResearchDatasetWindow = Schema.Struct({
+  manifest: ResearchDatasetManifest,
+  rows: Schema.Array(Schema.Union([ResearchPriceSample, ResearchCandle])),
+  nextCursor: Schema.NullOr(Schema.String),
+});
+export type ResearchDatasetWindow = typeof ResearchDatasetWindow.Type;
+
+export const ResearchErrorReason = Schema.Literals([
+  "invalid_request",
+  "not_found",
+  "conflict",
+  "budget",
+  "cancelled",
+  "storage",
+  "source",
+]);
+export type ResearchErrorReason = typeof ResearchErrorReason.Type;
+
+export class ResearchError extends Schema.TaggedError<ResearchError>()("ResearchError", {
+  reason: ResearchErrorReason,
+  detail: Schema.String,
+}) {
+  override get message(): string {
+    return `ResearchError(${this.reason}): ${this.detail}`;
+  }
+}
