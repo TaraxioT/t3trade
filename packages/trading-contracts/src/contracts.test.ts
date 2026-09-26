@@ -905,6 +905,7 @@ describe("subpath exports", () => {
         // The workspace TRADE.md document contract (plan 089/090), and the
         // research scene windows an authored calendar serves.
         "./plan-document",
+        "./researchData",
         "./researchScenes",
       ].sort(),
     );

@@ -175,6 +175,10 @@
     "./researchScenes": {
       "types": "./src/researchScenes.ts",
       "import": "./src/researchScenes.ts"
+    },
+    "./researchData": {
+      "types": "./src/researchData.ts",
+      "import": "./src/researchData.ts"
     }
   },
   "scripts": {
