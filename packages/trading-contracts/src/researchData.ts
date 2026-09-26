@@ -178,3 +178,50 @@ export class ResearchError extends Schema.TaggedError<ResearchError>()("Research
     return `ResearchError(${this.reason}): ${this.detail}`;
   }
 }
+
+const FomcOccurrenceBase = {
+  id: Schema.String,
+  meetingFrom: Schema.String,
+  meetingTo: Schema.String,
+  classification: Schema.Literals(["scheduled", "unscheduled"]),
+  sourceUrl: Schema.String,
+  sourceHash: Schema.String,
+  sourceExcerpt: Schema.String,
+  calendarUrl: Schema.String,
+  calendarHash: Schema.String,
+  retrievedAt: NonNegativeInt,
+  timezoneInterpretation: Schema.String,
+  minutesReleasedOn: Schema.NullOr(Schema.String),
+};
+export const FomcEventOccurrence = Schema.Union([
+  Schema.Struct({
+    ...FomcOccurrenceBase,
+    statementAt: NonNegativeInt,
+    missingTimeReason: Schema.Null,
+  }),
+  Schema.Struct({
+    ...FomcOccurrenceBase,
+    statementAt: Schema.Null,
+    missingTimeReason: Schema.Literals([
+      "future_unpublished",
+      "not_published",
+      "source_unavailable",
+      "source_missing",
+    ]),
+  }),
+]);
+export type FomcEventOccurrence = typeof FomcEventOccurrence.Type;
+
+/** Frozen source inventory; incomplete periods remain visible for review. */
+export const FomcEventInventory = Schema.Struct({
+  id: Schema.String,
+  category: Schema.Literals(["scheduled", "unscheduled", "all"]),
+  from: Schema.String,
+  to: Schema.String,
+  asOf: NonNegativeInt,
+  retrievedAt: NonNegativeInt,
+  status: Schema.Literals(["complete", "incomplete"]),
+  affectedPeriods: Schema.Array(Schema.String),
+  occurrences: Schema.Array(FomcEventOccurrence),
+});
+export type FomcEventInventory = typeof FomcEventInventory.Type;

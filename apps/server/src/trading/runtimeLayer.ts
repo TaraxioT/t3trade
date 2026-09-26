@@ -74,6 +74,7 @@ import { GraphHistoricalDataLive } from "./research/GraphHistoricalData.ts";
 import { ResearchDatasetStoreLive } from "./research/ResearchDatasetStore.ts";
 import { ResearchAcquisitionServiceLive } from "./research/ResearchAcquisitionService.ts";
 import { ResearchAcquisitionWorkerLive } from "./research/ResearchAcquisitionWorker.ts";
+import { FomcCalendarServiceLive } from "./research/FomcCalendarService.ts";
 
 const GraphResearchLayerLive = ResearchAcquisitionServiceLive.pipe(
   Layer.provideMerge(ResearchAcquisitionWorkerLive),
@@ -225,6 +226,7 @@ const TradingExecutionLayerLive = Layer.mergeAll(
 
 export const TradingLayerLive = Layer.mergeAll(
   GraphResearchLayerLive,
+  FomcCalendarServiceLive,
   // `trading_look`'s archive-backed fetch keys (plan 38 §2.4). Read-only over
   // the archiver's own file; a missing archive answers unavailable, not zero.
   TradingMarketArchiveLive,

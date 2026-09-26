@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  FomcEventOccurrence,
   GraphSourceRef,
   ResearchCandle,
   ResearchDatasetManifest,
@@ -10,6 +11,37 @@ import {
 } from "./researchData.ts";
 
 describe("research data contracts", () => {
+  it("requires either a sourced timestamp or an explicit missing-time reason", () => {
+    const row = {
+      id: "fomc:scheduled:2026-01-28",
+      meetingFrom: "2026-01-27",
+      meetingTo: "2026-01-28",
+      classification: "scheduled",
+      sourceUrl: "https://www.federalreserve.gov/statement",
+      sourceHash: "hash",
+      sourceExcerpt: "For release at 2:00 p.m. EST",
+      calendarUrl: "https://www.federalreserve.gov/calendar",
+      calendarHash: "calendar-hash",
+      retrievedAt: 1,
+      timezoneInterpretation: "America/New_York (EST, UTC-05:00)",
+      minutesReleasedOn: null,
+    };
+    expect(() =>
+      Schema.decodeUnknownSync(FomcEventOccurrence)({
+        ...row,
+        statementAt: null,
+        missingTimeReason: null,
+      }),
+    ).toThrow();
+    expect(
+      Schema.decodeUnknownSync(FomcEventOccurrence)({
+        ...row,
+        statementAt: 1,
+        missingTimeReason: null,
+      }).statementAt,
+    ).toBe(1);
+  });
+
   it("decodes a source and complete manifest with explicit provenance", () => {
     const source = Schema.decodeUnknownSync(GraphSourceRef)({
       provider: "the_graph",
