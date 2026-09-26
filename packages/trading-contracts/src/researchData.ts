@@ -138,6 +138,9 @@ export const ResearchJobView = Schema.Struct({
   cursor: Schema.NullOr(Schema.String),
   updatedAt: NonNegativeInt,
   failureReason: Schema.optional(Schema.String),
+  studyId: Schema.optional(Schema.String),
+  completedWindows: Schema.optional(NonNegativeInt),
+  plannedWindows: Schema.optional(NonNegativeInt),
 });
 export type ResearchJobView = typeof ResearchJobView.Type;
 

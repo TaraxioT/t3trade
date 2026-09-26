@@ -179,6 +179,10 @@
     "./researchData": {
       "types": "./src/researchData.ts",
       "import": "./src/researchData.ts"
+    },
+    "./eventResearch": {
+      "types": "./src/eventResearch.ts",
+      "import": "./src/eventResearch.ts"
     }
   },
   "scripts": {

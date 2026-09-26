@@ -906,6 +906,7 @@ describe("subpath exports", () => {
         // research scene windows an authored calendar serves.
         "./plan-document",
         "./researchData",
+        "./eventResearch",
         "./researchScenes",
       ].sort(),
     );

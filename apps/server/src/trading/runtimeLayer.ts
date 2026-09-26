@@ -75,11 +75,21 @@ import { ResearchDatasetStoreLive } from "./research/ResearchDatasetStore.ts";
 import { ResearchAcquisitionServiceLive } from "./research/ResearchAcquisitionService.ts";
 import { ResearchAcquisitionWorkerLive } from "./research/ResearchAcquisitionWorker.ts";
 import { FomcCalendarServiceLive } from "./research/FomcCalendarService.ts";
+import { ResearchStudyStoreLive } from "./research/ResearchStudyStore.ts";
+import { EventResearchServiceLive } from "./research/EventResearchService.ts";
 
-const GraphResearchLayerLive = ResearchAcquisitionServiceLive.pipe(
-  Layer.provideMerge(ResearchAcquisitionWorkerLive),
-  Layer.provideMerge(Layer.mergeAll(ResearchDatasetStoreLive, GraphHistoricalDataLive)),
+const GraphResearchStoresLive = Layer.mergeAll(
+  ResearchDatasetStoreLive,
+  ResearchStudyStoreLive,
+  GraphHistoricalDataLive,
 );
+const GraphResearchWorkerLive = ResearchAcquisitionWorkerLive.pipe(
+  Layer.provideMerge(GraphResearchStoresLive),
+);
+const GraphResearchLayerLive = Layer.mergeAll(
+  ResearchAcquisitionServiceLive,
+  EventResearchServiceLive(),
+).pipe(Layer.provideMerge(GraphResearchWorkerLive), Layer.provideMerge(GraphResearchStoresLive));
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
