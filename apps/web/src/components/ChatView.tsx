@@ -1493,10 +1493,24 @@ export default function ChatView(props: ChatViewProps) {
     mission: boundMission,
   });
   const threadMarket = threadPanel.asset;
-  // Below this the companion is a row above the timeline that expands from a
-  // chip; above it, a column beside the chat. The breakpoint is the one the
-  // right panel already switches its own layout at.
-  const useCompanionChipLayout = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const [marketWorkspaceElement, setMarketWorkspaceElement] = useState<HTMLDivElement | null>(null);
+  const [marketWorkspaceIsNarrow, setMarketWorkspaceIsNarrow] = useState(false);
+  const companionUsesNarrowViewport = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const useCompanionChipLayout = companionUsesNarrowViewport || marketWorkspaceIsNarrow;
+  useLayoutEffect(() => {
+    if (!marketWorkspaceElement || threadMarket === null) return;
+    // Measure the parent of BOTH columns: opening the right panel reduces
+    // this space without changing the window's media query. Keep at least
+    // 480px for chat beside the companion's widest (384px) column.
+    const measure = () => {
+      setMarketWorkspaceIsNarrow(marketWorkspaceElement.getBoundingClientRect().width < 864);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(marketWorkspaceElement);
+    return () => observer.disconnect();
+  }, [marketWorkspaceElement, threadMarket]);
   const currentRouteThreadKeyRef = useRef<string | null>(routeThreadKey);
   useLayoutEffect(() => {
     currentRouteThreadKeyRef.current = routeThreadKey;
@@ -9493,7 +9507,7 @@ export default function ChatView(props: ChatViewProps) {
           />
         ) : null}
         {/* Main content area with optional plan sidebar */}
-        <div className="flex min-h-0 min-w-0 flex-1">
+        <div ref={setMarketWorkspaceElement} className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
           <ThreadConversationLayout
             market={threadMarketCard}

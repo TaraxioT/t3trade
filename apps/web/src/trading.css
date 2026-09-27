@@ -753,17 +753,9 @@
   --chat-composer-attached-tint: color-mix(in srgb, var(--warning) 8%, transparent);
 }
 
-/* The trading graph's one viewport height, wherever a graph is docked — the
-   thread drawer, the mission panel, research — so the market reads the same
-   size in every surface that shows it. Compact below the sm breakpoint,
-   where the composer column is the whole screen and that much of it is too
-   much chart. This fixed tier is LIVE's chart. The research views cannot
-   take it too: they render inside the market drawer's capped body beside
-   the tab row, recipe line and footer, and a second fixed 46vh there
-   double-books the drawer's own cap — the study crushes to slivers and the
-   drawer grows nested scrollbars. Research stages instead guarantee their
-   chart a band and let the explanatory content extend the drawer's single
-   vertical scroll. */
+/* Default chart sizing for trade home, missions and research. Thread panes
+   override these locally to leave room for the conversation. Research keeps
+   a minimum chart band while explanatory content uses its parent's scroll. */
 .trading-graph-viewport {
   height: clamp(200px, 30vh, 280px);
 }
