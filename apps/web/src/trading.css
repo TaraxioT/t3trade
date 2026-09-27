@@ -630,12 +630,9 @@
 /* Mirror the run-context strip above the composer. These surfaces deliberately
    own no card fill or border themselves: a masked pseudo-element draws the
    same inset glass, 16px outer corners, quiet outline, and open attachment
-   seam as the strip below. The market drawer is the same material once more:
-   the thread's chart docked as the topmost attachment inside the composer's
-   glass shell, never a floating card of its own. */
+   seam as the strip below. The market has its own closed surface above chat. */
 .chat-composer-drawer-surface,
-.chat-composer-top-drawer,
-.chat-composer-market-drawer {
+.chat-composer-top-drawer {
   --chat-composer-attachment-overlap: calc(1rem + 1px);
   --chat-composer-attached-surface: var(--chat-composer-glass-surface, var(--card));
   --chat-composer-attached-outline: var(
@@ -675,21 +672,18 @@
 }
 
 .chat-composer-drawer-attached,
-.chat-composer-top-drawer,
-.chat-composer-market-drawer {
+.chat-composer-top-drawer {
   padding-bottom: var(--chat-composer-attachment-overlap);
 }
 
 [data-chat-composer-form="true"],
 .chat-composer-drawer-slot,
-.chat-composer-top-drawer,
-.chat-composer-market-drawer {
+.chat-composer-top-drawer {
   --chat-composer-drawer-inset: 1.375rem;
 }
 
 .chat-composer-drawer-slot,
-.chat-composer-top-drawer,
-.chat-composer-market-drawer {
+.chat-composer-top-drawer {
   --chat-composer-attachment-overlap: calc(1rem + 1px);
   width: calc(100% - var(--chat-composer-drawer-inset) - var(--chat-composer-drawer-inset));
   max-width: calc(48rem - var(--chat-composer-drawer-inset) - var(--chat-composer-drawer-inset));
@@ -697,11 +691,7 @@
   margin-bottom: calc(-1 * var(--chat-composer-attachment-overlap));
 }
 
-:is(
-  .chat-composer-drawer-surface,
-  .chat-composer-top-drawer,
-  .chat-composer-market-drawer
-)::before {
+:is(.chat-composer-drawer-surface, .chat-composer-top-drawer)::before {
   pointer-events: none;
   position: absolute;
   z-index: -1;
@@ -776,6 +766,104 @@
    vertical scroll. */
 .trading-graph-viewport {
   height: clamp(200px, 30vh, 280px);
+}
+
+/* Size against the space left by headers and the terminal, not the window.
+   In short workspaces the two sections scroll together rather than clipping. */
+.trading-thread-workspace {
+  container-type: size;
+  gap: 12px;
+  padding: 12px;
+  overflow-x: clip;
+  overflow-y: auto;
+  --trading-market-height: clamp(220px, min(35cqh, calc(100cqh - 292px)), 360px);
+
+  @media (min-width: 40rem) {
+    padding-inline: 20px;
+  }
+}
+
+.trading-thread-surface {
+  --thread-surface: var(--card);
+  --thread-outline: rgb(0 0 0 / 8%);
+  --thread-highlight: transparent;
+  position: relative;
+  isolation: isolate;
+  border-radius: 22px;
+  box-shadow: 0 12px 28px -18px rgb(0 0 0 / 40%);
+
+  @variant dark {
+    --thread-surface: var(--surface-raised);
+    --thread-outline: rgb(255 255 255 / 5%);
+    --thread-highlight: rgb(255 255 255 / 3%);
+    box-shadow: none;
+  }
+
+  &::before {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border: 1px solid var(--thread-outline);
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--thread-surface) var(--glass-opacity), transparent);
+    box-shadow: inset 0 1px var(--thread-highlight);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  }
+
+  @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    &::before {
+      background: var(--thread-surface);
+    }
+  }
+}
+
+html[data-theme-id] .trading-thread-surface {
+  --thread-surface: var(--app-theme-surface-raised);
+  --thread-outline: var(--app-theme-toolbar-border);
+
+  @variant dark {
+    --thread-highlight: color-mix(in srgb, var(--app-theme-input) 12%, transparent);
+    --thread-outline: color-mix(in srgb, var(--app-theme-input) 30%, var(--background));
+  }
+}
+
+html[data-theme-id="t3-chat"] .trading-thread-surface {
+  @variant dark {
+    --thread-highlight: color-mix(in srgb, #432d48 12%, transparent);
+    --thread-outline: #241e28;
+  }
+}
+
+.trading-thread-market[data-open="true"] {
+  height: var(--trading-market-height);
+}
+
+.trading-thread-market-body {
+  overscroll-behavior-y: contain;
+}
+
+/* Leave room for the existing range controls within the bounded market pane.
+   Other graph surfaces keep their original viewport dimensions. */
+.trading-thread-market .trading-graph-viewport {
+  height: max(160px, calc(var(--trading-market-height) - 100px));
+}
+
+.trading-thread-market .trading-graph-viewport-research {
+  min-height: 160px;
+}
+
+.trading-thread-conversation {
+  min-height: max(280px, calc(var(--trading-composer-height, 0px) + 120px));
+  flex-shrink: 0;
+  padding: 1px;
+}
+
+.trading-thread-messages {
+  overflow: clip;
+  border-radius: 21px;
 }
 
 .trading-graph-viewport-research {
@@ -893,9 +981,9 @@
    Split the glass into exact surfaces while a drawer or tab is present; the
    default composer keeps the cheaper continuous layer. */
 .chat-composer-glass-shell:is(
-  .chat-composer-glass-shell-attached,
-  :has(:is(.chat-composer-top-drawer, .chat-composer-shoulder-tab))
-)::before,
+    .chat-composer-glass-shell-attached,
+    :has(:is(.chat-composer-top-drawer, .chat-composer-shoulder-tab))
+  )::before,
 .chat-composer-glass-shell:is(
     .chat-composer-glass-shell-attached,
     :has(:is(.chat-composer-top-drawer, .chat-composer-shoulder-tab))

@@ -1,12 +1,5 @@
-/**
- * The market card's attachment seam: the thread's market renders as the
- * composer's topmost drawer — content inside the glass shell — never as a
- * floating card above it. What is pinned here is the surface the card renders
- * on, the collapse behavior that must survive the move, and the stylesheet
- * contract the drawer and the graph viewport depend on. The chart's own
- * rendering is MarketChartPanel's seam (MarketChartPanel.test.tsx).
- */
-// @effect-diagnostics nodeBuiltinImport:off - Contract checks read index.css for the drawer and viewport classes.
+/** Regression coverage for the independent market surface and its persisted controls. */
+// @effect-diagnostics nodeBuiltinImport:off - Stylesheet contracts cover shared viewport sizing.
 import * as NodeFS from "node:fs";
 import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -243,22 +236,17 @@ const findRetry = (root: ReactElement<TestIdProps>): ReactElement<TestIdProps> =
   throw new Error("retry button not rendered");
 };
 
-describe("ThreadMarketCard: attached to the composer's glass shell", () => {
-  it("renders on the composer's drawer surface, not an independent card", () => {
+describe("ThreadMarketCard: independent market surface", () => {
+  it("keeps the market outside composer attachment and inset accounting", () => {
     const markup = render(false);
 
-    expect(markup).toContain('data-testid="thread-market-card"');
-    expect(markup).toContain("chat-composer-market-drawer");
-    expect(markup).toContain("pointer-events-auto");
-    // The old floating-card surface is gone: no border, fill or blur of its own.
-    expect(markup).not.toContain("border-border/60");
-    expect(markup).not.toContain("bg-background/95");
-    expect(markup).not.toContain("backdrop-blur-sm");
-    expect(markup).not.toContain("rounded-xl");
-    expect(markup).not.toContain("max-w-3xl");
+    expect(markup).toContain('aria-label="ETH market"');
+    expect(markup).toContain("trading-thread-surface");
+    expect(markup).not.toContain('data-composer-banner-surface="attached"');
+    expect(markup).not.toContain("chat-composer-market-drawer");
   });
 
-  it("keeps a compact attached header while collapsed and unmounts the body", () => {
+  it("keeps a compact market header while collapsed and unmounts the body", () => {
     const markup = render(true);
 
     expect(markup).toContain('data-open="false"');
@@ -270,13 +258,13 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
     expect(markup).not.toContain("max-h-[46vh]");
   });
 
-  it("expands into a body that scrolls inside the drawer", () => {
+  it("expands into a body that scrolls inside the upper section", () => {
     const markup = render(false);
 
     expect(markup).toContain('data-open="true"');
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain('data-testid="market-chart-stub"');
-    expect(markup).toContain("max-h-[46vh]");
+    expect(markup).toContain("trading-thread-market-body");
     expect(markup).toContain("overflow-y-auto");
   });
 
@@ -615,17 +603,11 @@ describe("ThreadMarketCard: attached to the composer's glass shell", () => {
     expect(cardStateStore.studyOverlay).toBe("scene-missing");
   });
 
-  it("backs the drawer surface and the graph viewport with real stylesheet rules", () => {
+  it("keeps shared graph dimensions for surfaces outside the thread workspace", () => {
     const stylesheet = NodeFS.readFileSync(new URL("../../trading.css", import.meta.url), "utf8");
     // Whitespace-stripped so formatter line wrapping cannot break the check.
     const compact = stylesheet.replace(/\s+/g, "");
 
-    // The market drawer shares the composer drawer material, including the
-    // masked glass pseudo-element that paints the inset surface and its seam.
-    expect(compact).toContain(".chat-composer-market-drawer{");
-    expect(compact).toContain(
-      ":is(.chat-composer-drawer-surface,.chat-composer-top-drawer,.chat-composer-market-drawer)::before{",
-    );
     // The frozen graph viewport contract other surfaces consume.
     expect(compact).toContain(".trading-graph-viewport{");
     expect(compact).toContain("clamp(300px,46vh,470px)");

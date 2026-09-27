@@ -358,6 +358,7 @@ import {
   useThreadShell,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
+import { ThreadConversationLayout } from "./chat/ThreadConversationLayout";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -5840,6 +5841,11 @@ export default function ChatView(props: ChatViewProps) {
     (height: number) => {
       const nextHeight = Math.ceil(height);
       if (nextHeight <= 0) return;
+      // Tall drafts and approval drawers must remain reachable in short windows.
+      composerOverlayElement?.parentElement?.style.setProperty(
+        "--trading-composer-height",
+        `${nextHeight}px`,
+      );
       const nextInset = resolveComposerTimelineInset({
         currentInset: composerTimelineInsetRef.current,
         overlayHeight: nextHeight,
@@ -9370,12 +9376,8 @@ export default function ChatView(props: ChatViewProps) {
       />
     );
 
-  // The market itself: the chart and what is on it, attached inside the
-  // composer's glass shell as its topmost drawer — still inside the
-  // composer's own overlay, so the timeline's end inset already accounts for
-  // it and the graph can never cover the conversation. Absent in the draft
-  // hero state, where the composer is centred and there is no thread for a
-  // market to belong to yet.
+  // The market owns the upper surface; only the input belongs to the
+  // composer's measured overlay. Draft heroes still have no market surface.
   const threadMarketCard =
     threadMarket === null || isDraftHeroState ? null : (
       <ThreadMarketCard
@@ -9493,8 +9495,9 @@ export default function ChatView(props: ChatViewProps) {
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
-          <div
-            className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+          <ThreadConversationLayout
+            market={threadMarketCard}
+            companion={useCompanionChipLayout ? threadMarketCompanion : null}
             data-chat-workspace-drop-target="true"
             onDragEnter={workspaceFileDropHandlers.onDragEnter}
             onDragOver={workspaceFileDropHandlers.onDragOver}
@@ -9531,14 +9534,13 @@ export default function ChatView(props: ChatViewProps) {
                 }}
               />
             </div>
-            {/*
-              Narrow viewports: the market is a row above the timeline that
-              expands from a chip. Inside the chat column and above the scroll,
-              so it can never sit over the composer.
-            */}
-            {useCompanionChipLayout ? threadMarketCompanion : null}
             {/* Messages Wrapper */}
-            <div className="relative flex min-h-0 flex-1 flex-col bg-background">
+            <div
+              className={cn(
+                "relative flex min-h-0 flex-1 flex-col",
+                threadMarketCard ? "trading-thread-messages" : "bg-background",
+              )}
+            >
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
@@ -9699,10 +9701,6 @@ export default function ChatView(props: ChatViewProps) {
                     }
                   >
                     <ComposerSurface.Shell contextStrip={showComposerContextStrip}>
-                      {/* The market graph is the shell's topmost attachment:
-                          banners and the sync pill stay above the shell, this
-                          drawer docks inside it, above the composer host. */}
-                      {threadMarketCard}
                       <ComposerSurface.Host>
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           <ChatComposer
@@ -9949,7 +9947,7 @@ export default function ChatView(props: ChatViewProps) {
                 onPrepared={handlePreparedPullRequestThread}
               />
             ) : null}
-          </div>
+          </ThreadConversationLayout>
           {/* end chat column */}
           {/*
             Wide viewports: the market is its own column beside the chat. A

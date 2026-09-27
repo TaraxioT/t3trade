@@ -1081,7 +1081,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return <div className="h-full min-h-0 bg-background" data-timeline-loading="true" />;
     }
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
+      <div
+        className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center"
+        style={{ paddingBottom: contentInsetEndAdjustment }}
+      >
         <p className="text-placeholder text-sm">Send a message to start the conversation.</p>
         <p className="text-placeholder text-sm">{WORKSPACE_TRADING_SIGNPOST}</p>
       </div>

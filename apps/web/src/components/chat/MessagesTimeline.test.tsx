@@ -279,6 +279,15 @@ function buildSnapShotTimelineEntry(previewUrl?: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("reserves composer clearance when centering the empty conversation", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[]} contentInsetEndAdjustment={204} />,
+    );
+
+    expect(markup).toContain("Send a message to start the conversation.");
+    expect(markup).toContain('style="padding-bottom:204px"');
+  });
+
   it("renders previous and next controls with the minimap", () => {
     const first = buildUserTimelineEntry("First turn");
     const secondBase = buildUserTimelineEntry("Second turn");

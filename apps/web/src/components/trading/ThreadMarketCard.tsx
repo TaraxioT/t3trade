@@ -8,12 +8,9 @@ import {
 /**
  * The market, where the trader is already looking.
  *
- * A trading thread's chart and positions sit in the chat column, attached to
- * the composer as its topmost drawer: the picture of the market and what is on
- * it, directly under the sentence being typed about them. The drawer surface
- * itself is the composer's own glass (`.chat-composer-market-drawer` in
- * index.css) — the card is content inside the shell, never a floating card
- * beside it.
+ * A trading thread's chart and positions occupy a separate glass surface
+ * above the conversation. Its height is bounded by the workspace, with one
+ * scrolling body for the chart, research details and position information.
  *
  * What the card holds is the same in both of the thread's two states, only
  * sourced differently:
@@ -81,7 +78,7 @@ function UnboundMarketBody({
     return (
       <div className="flex flex-col gap-3" data-testid="thread-market-card-skeleton">
         {/* The viewport contract the chart itself will fill, so the loading
-            beat holds the drawer at the height the market arrives at. */}
+            beat holds the surface at the height the market arrives at. */}
         <Skeleton className="trading-graph-viewport w-full" />
         <Skeleton className="h-8 w-full" />
       </div>
@@ -93,8 +90,6 @@ function UnboundMarketBody({
       <MarketChartPanel
         environmentId={environmentId}
         asset={asset}
-        // No height class: the panel owns its viewport via the shared
-        // trading-graph-viewport contract, so every graph surface reads alike.
         // The armed watch would land in the alert list on the trade home, one
         // surface away from the chart that armed it.
         armable={false}
@@ -434,18 +429,14 @@ export function ThreadMarketCard({
   if (mission !== null && isMissionComplete(mission.status)) return null;
 
   return (
-    // Drawer content, not a card: the composer's market drawer class paints
-    // the glass, the inset width and the open seam into the composer host
-    // below, in both the collapsed and expanded heights.
     <section
       aria-label={`${asset} market`}
       data-testid="thread-market-card"
       tabIndex={-1}
       data-open={isOpen ? "true" : "false"}
-      data-composer-banner-surface="attached"
-      className="chat-composer-market-drawer pointer-events-auto px-3 pt-2 sm:px-4"
+      className="trading-thread-market trading-thread-surface pointer-events-auto flex min-h-0 min-w-0 shrink-0 flex-col px-3 py-2 sm:px-4"
     >
-      <div className="flex w-full min-w-0 items-center gap-2 px-1 py-1">
+      <div className="flex w-full min-w-0 shrink-0 flex-wrap items-center gap-2 px-1 py-1">
         <button
           type="button"
           className="flex min-w-0 items-center gap-2 rounded-md text-left"
@@ -494,15 +485,10 @@ export function ThreadMarketCard({
           </div>
         )}
       </div>
-      {/* Unmounted rather than hidden while folded: see the module note. The
-          cap is on the drawer, so a mission with a long ledger scrolls inside
-          it instead of pushing the composer down the column. The x axis is
-          CLIPPED, not auto: `overflow-y-auto` alone computes overflow-x to
-          auto, and a stray horizontal trackpad swipe then scrolls the drawer
-          sideways and cuts the left edge off every line in it with no way
-          back. Nothing in the drawer is meant to pan horizontally. */}
+      {/* Folding unmounts subscriptions. One vertical scroll keeps long ledgers
+          reachable; horizontal clipping prevents accidental sideways panning. */}
       {isOpen ? (
-        <div className={cn("max-h-[46vh] overflow-x-clip overflow-y-auto pt-1")}>
+        <div className="trading-thread-market-body min-h-0 overflow-x-clip overflow-y-auto pt-1">
           {mission === null ? (
             <UnboundMarketBody
               environmentId={environmentId}
